@@ -1,24 +1,52 @@
 {
   "manifest_version": 3,
-  "name": "Suno Direct Downloader",
-  "version": "2.0",
-  "description": "Captures audio from Suno songs for download.",
+  "name": "Suno Advanced Downloader",
+  "version": "3.0.0",
+  "description": "Advanced Suno song downloader with auto-recording, MP3 conversion, download queue, history & metadata extraction",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage",
+    "downloads",
+    "tabs",
+    "notifications",
+    "offscreen"
   ],
   "host_permissions": [
     "https://suno.com/*"
   ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Suno Downloader"
+    "default_title": "Suno Advanced Downloader",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {
       "matches": ["https://suno.com/*"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": false
     }
-  ]
+  ],
+    "web_accessible_resources": [
+    {
+      "resources": ["lamejs/lame.min.js", "lamejs/lame.wasm"],
+      "matches": ["https://suno.com/*"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }
