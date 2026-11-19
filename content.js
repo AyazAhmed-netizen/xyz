@@ -457,15 +457,34 @@ function observePlayer() {
 
 function onLoadedMetadata(e) {
   const player = e.target;
-  expectedDuration = player.duration;
-  updateSongDurationDisplay(expectedDuration);
+  const duration = player.duration;
+  // Validate duration: must be a finite positive number
+  if (isFinite(duration) && duration > 0) {
+    expectedDuration = duration;
+    updateSongDurationDisplay(expectedDuration);
+    console.log('Song duration detected:', expectedDuration, 'seconds');
+  } else {
+    console.warn('Invalid duration from media element:', duration);
+  }
 }
 
 function onDurationChange(e) {
   const player = e.target;
-  if (player.duration && player.duration !== expectedDuration) {
-    expectedDuration = player.duration;
+  const duration = player.duration;
+  // Validate duration: must be a finite positive number
+  if (isFinite(duration) && duration > 0 && duration !== expectedDuration) {
+    expectedDuration = duration;
     updateSongDurationDisplay(expectedDuration);
+    console.log('Song duration updated:', expectedDuration, 'seconds');
+    
+    // If we're recording and duration changed, update auto-stop timeout
+    if (isRecording && autoStopTimeout) {
+      clearTimeout(autoStopTimeout);
+      const timeoutMs = (expectedDuration + 5) * 1000;
+      autoStopTimeout = setTimeout(() => {
+        if (isRecording) stopRecording();
+      }, timeoutMs);
+    }
   }
 }
 

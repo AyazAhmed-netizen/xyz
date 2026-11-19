@@ -50,8 +50,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function saveToHistory(metadata, downloadId) {
-  const { localStorage } = chrome.storage;
-  const result = await localStorage.get('sunoHistory');
+  const result = await chrome.storage.local.get('sunoHistory');
   const history = result.sunoHistory || [];
   
   const entry = {
@@ -72,19 +71,16 @@ async function saveToHistory(metadata, downloadId) {
 }
 
 async function getHistory() {
-  const { localStorage } = chrome.storage;
-  const result = await localStorage.get('sunoHistory');
+  const result = await chrome.storage.local.get('sunoHistory');
   return result.sunoHistory || [];
 }
 
 async function clearHistory() {
-  const { localStorage } = chrome.storage;
-  await localStorage.set({ sunoHistory: [] });
+  await chrome.storage.local.set({ sunoHistory: [] });
 }
 
 async function getStats() {
-  const { localStorage } = chrome.storage;
-  const result = await localStorage.get('sunoHistory');
+  const result = await chrome.storage.local.get('sunoHistory');
   const history = result.sunoHistory || [];
   
   const totalSongs = history.length;
