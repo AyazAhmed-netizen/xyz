@@ -1,11 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Suno Direct Downloader",
-  "version": "2.0",
-  "description": "Captures audio from Suno songs for download.",
+  "version": "3.0",
+  "description": "Auto-records Suno songs when they play, tracks history and stats.",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage",
+    "downloads"
   ],
   "host_permissions": [
     "https://suno.com/*"
@@ -20,5 +22,8 @@
       "js": ["content.js"],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
 }
