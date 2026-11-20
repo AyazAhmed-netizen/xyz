@@ -161,31 +161,39 @@ function extractSongMetadata() {
     coverUrl: null
   };
   
-  // SCOPE: Extract from the bottom player bar when present so we don't grab
-  // the logged-in username from the sidebar or a heading from the page feed.
+  // SCOPE: Extract ONLY from the bottom player bar to avoid sidebar username/feed headings
   const playerBar =
     document.querySelector('[data-testid="player-bar"]') ||
-    document.querySelector('div[class*="player"]:not([class*="playerCard"])') ||
+    document.querySelector('div[class*="player-bar"]') ||
+    document.querySelector('footer[class*="player"]') ||
+    document.querySelector('[data-testid="playback-bar"]') ||
     null;
 
-  const scopes = playerBar ? [playerBar, document] : [document];
+  const scopes = playerBar ? [playerBar] : [];
 
-  // Track title: look for the largest heading-like text in the player scope,
-  // fall back to the document title ("Song Name | Suno")
+  // Track title: look for the song title in the player bar ONLY
   for (const scope of scopes) {
     if (metadata.songName) break;
     const titleSelectors = [
       '[data-testid="song-title"]',
       '[data-testid="track-title"]',
+      '[data-testid="playback-title"]',
       '[class*="SongTitle"]',
+      '[class*="TrackTitle"]',
+      '[class*="playback-title"]',
+      '[class*="song-title"]',
       '.song-title',
       'h1[class*="title"]',
-      'h1'
+      'h2[class*="title"]',
+      'h3[class*="title"]'
     ];
     for (const selector of titleSelectors) {
       const el = scope.querySelector(selector);
       const text = el?.textContent?.trim();
-      if (text) { metadata.songName = text; break; }
+      // Filter out generic words like "Explore", "Library", "Create", etc.
+      if (text && !['explore', 'library', 'create', 'suno', 'home', 'search', 'playlist'].includes(text.toLowerCase())) {
+        metadata.songName = text; break; 
+      }
     }
   }
 
@@ -195,13 +203,17 @@ function extractSongMetadata() {
     const artistSelectors = [
       '[data-testid="song-artist"]',
       '[data-testid="track-artist"]',
+      '[data-testid="playback-artist"]',
       '[class*="Artist"] a',
+      '[class*="artist"] a',
       'a[href^="/@"]'
     ];
     for (const selector of artistSelectors) {
       const el = scope.querySelector(selector);
       const text = el?.textContent?.trim();
-      if (text) { metadata.artist = text; break; }
+      if (text && !['explore', 'library', 'create', 'suno', 'home', 'search'].includes(text.toLowerCase())) {
+        metadata.artist = text; break; 
+      }
     }
   }
 
@@ -209,7 +221,9 @@ function extractSongMetadata() {
   if (!metadata.songName) {
     const t = document.title || '';
     const m = t.match(/^(.+?)\s*[|·]\s*Suno/i);
-    if (m && m[1].trim()) metadata.songName = m[1].trim();
+    if (m && m[1].trim() && !['explore', 'library', 'create', 'suno', 'home', 'search'].includes(m[1].trim().toLowerCase())) {
+      metadata.songName = m[1].trim();
+    }
   }
 
   // Try to get duration from audio element or UI
@@ -217,15 +231,16 @@ function extractSongMetadata() {
   if (audioEl && audioEl.duration && !isNaN(audioEl.duration) && isFinite(audioEl.duration)) {
     metadata.duration = Math.floor(audioEl.duration);
   } else {
-    // Try UI duration display
+    // Try UI duration display - ONLY in player bar
     const durationSelectors = [
       '[data-testid="duration"]',
+      '[data-testid="playback-duration"]',
       '[class*="duration"]',
       '[class*="time"]'
     ];
     
     for (const selector of durationSelectors) {
-      const el = document.querySelector(selector);
+      const el = playerBar?.querySelector(selector) || document.querySelector(selector);
       if (el && el.textContent?.trim()) {
         const text = el.textContent.trim();
         const match = text.match(/(\d+):(\d+)/);
@@ -240,12 +255,13 @@ function extractSongMetadata() {
   // Try to get cover image
   const coverSelectors = [
     '[data-testid="song-cover"] img',
+    '[data-testid="playback-cover"] img',
     '[class*="cover"] img',
     '[class*="artwork"] img'
   ];
   
   for (const selector of coverSelectors) {
-    const el = document.querySelector(selector);
+    const el = playerBar?.querySelector(selector) || document.querySelector(selector);
     if (el && el.src) {
       metadata.coverUrl = el.src;
       break;
@@ -449,15 +465,18 @@ async function startRecording(queueItemId, metadata) {
     isRecording = true;
     recordingStartTime = Date.now();
     
-    // Start progress timer
+    // Start progress timer with timeout check
     recordingTimer = setInterval(() => {
       const elapsed = Date.now() - recordingStartTime;
       safeSend({
         type: 'RECORDING_PROGRESS',
         queueItemId: currentQueueItemId,
-        progress: Math.min(90, Math.floor((elapsed / (currentSongMetadata.duration * 1000 || 180000)) * 90)),
+        progress: Math.min(100, Math.floor((elapsed / (currentSongMetadata.duration * 1000 || 180000)) * 100)),
         elapsed
       });
+      
+      // Check for song end / timeout
+      checkRecordingTimeout();
     }, 1000);
     
     // Notify background
@@ -614,6 +633,27 @@ function handleSongEnd() {
     log('Song ended - stopping auto-recording');
     stopRecording();
     isAutoRecording = false;
+  }
+}
+
+// Also check audio duration vs elapsed time to force-stop at song end
+function checkRecordingTimeout() {
+  if (!isRecording || !currentSongMetadata) return;
+  
+  const audioEl = findAudioElement();
+  const expectedDuration = currentSongMetadata.duration * 1000 || 180000; // default 3 min
+  const elapsed = Date.now() - recordingStartTime;
+  
+  // If we've recorded longer than expected duration + 10s buffer, force stop
+  if (elapsed > expectedDuration + 10000) {
+    log('Recording timeout - forcing stop (elapsed:', elapsed, 'expected:', expectedDuration, ')');
+    stopRecording();
+  }
+  
+  // Also check audio element ended state
+  if (audioEl && audioEl.ended && !audioEl.paused) {
+    log('Audio element ended - stopping recording');
+    stopRecording();
   }
 }
 
