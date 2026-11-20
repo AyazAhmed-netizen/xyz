@@ -19,7 +19,7 @@ const DEFAULT_SETTINGS = {
   maxHistoryItems: 100
 };
 
-// Initialize storage
+// Initialize storage and resume queue on startup
 async function initStorage() {
   const result = await chrome.storage.local.get([STORAGE_KEYS.SETTINGS, STORAGE_KEYS.QUEUE, STORAGE_KEYS.HISTORY]);
   
@@ -31,6 +31,34 @@ async function initStorage() {
   }
   if (!result[STORAGE_KEYS.HISTORY]) {
     await chrome.storage.local.set({ [STORAGE_KEYS.HISTORY]: [] });
+  }
+  
+  // Resume any in-progress queue items on startup
+  await resumeQueue();
+}
+
+async function resumeQueue() {
+  const queue = await getQueue();
+  const inProgress = queue.filter(item => 
+    item.status === 'recording' || item.status === 'encoding'
+  );
+  
+  // Reset stuck items to pending so they can be retried
+  for (const item of inProgress) {
+    await updateQueueItem(item.id, { 
+      status: 'failed', 
+      error: 'Interrupted - click retry to restart',
+      progress: 0 
+    });
+  }
+  
+  // Update badge
+  await updateBadge();
+  
+  // If there are pending items, start processing
+  const pending = queue.filter(item => item.status === 'pending');
+  if (pending.length > 0 && !isProcessing) {
+    processQueue();
   }
 }
 
@@ -269,7 +297,14 @@ async function processQueue() {
   const queue = await getQueue();
   const pendingItem = queue.find(item => item.status === 'pending');
   
-  if (!pendingItem) return;
+  if (!pendingItem) {
+    // Check if there are failed items that can be retried
+    const failedItems = queue.filter(item => item.status === 'failed');
+    if (failedItems.length > 0) {
+      // Don't auto-retry failed items - user must click retry
+    }
+    return;
+  }
   
   isProcessing = true;
   await updateQueueItem(pendingItem.id, { status: 'recording', startedAt: Date.now() });
@@ -278,13 +313,20 @@ async function processQueue() {
     // Signal content script to start recording
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true, url: 'https://suno.com/*' });
     if (tab) {
-      await chrome.tabs.sendMessage(tab.id, {
-        type: 'START_RECORDING',
-        queueItemId: pendingItem.id,
-        songName: pendingItem.songName,
-        artist: pendingItem.artist,
-        duration: pendingItem.duration
-      });
+      try {
+        await chrome.tabs.sendMessage(tab.id, {
+          type: 'START_RECORDING',
+          queueItemId: pendingItem.id,
+          songName: pendingItem.songName,
+          artist: pendingItem.artist,
+          duration: pendingItem.duration
+        });
+      } catch (msgError) {
+        // Content script might not be ready, mark as failed
+        throw new Error('Content script not ready - please refresh the Suno page');
+      }
+    } else {
+      throw new Error('No active Suno tab found');
     }
   } catch (error) {
     await handleDownloadError(pendingItem, error);
@@ -324,6 +366,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'CLEAR_QUEUE':
         await clearQueue();
         sendResponse({ success: true });
+        break;
+
+      case 'RETRY_QUEUE_ITEM':
+        await updateQueueItem(message.id, { status: 'pending', error: null, progress: 0 });
+        sendResponse({ success: true });
+        processQueue();
         break;
         
       case 'REMOVE_FROM_HISTORY':

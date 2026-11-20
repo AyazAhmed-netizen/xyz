@@ -270,20 +270,30 @@ function extractSongMetadata() {
 }
 
 function findAudioElement() {
-  // Find the main audio player
+  // Find the main audio player - try multiple strategies
   const selectors = [
     'audio[data-testid="audio-player"]',
     'audio[class*="player"]',
+    'audio[controls]',
     'audio',
     'video' // Sometimes Suno uses video element for audio
   ];
   
   for (const selector of selectors) {
     const el = document.querySelector(selector);
-    if (el && (el.src || el.currentSrc || el.querySelector('source'))) {
+    if (el && (el.src || el.currentSrc || el.querySelector('source') || el.duration)) {
       return el;
     }
   }
+  
+  // Fallback: look for any audio/video element that has a duration
+  const allMedia = document.querySelectorAll('audio, video');
+  for (const el of allMedia) {
+    if (el.duration && !isNaN(el.duration) && isFinite(el.duration)) {
+      return el;
+    }
+  }
+  
   return null;
 }
 
@@ -316,9 +326,46 @@ function getCurrentTime() {
   return audioEl ? audioEl.currentTime : 0;
 }
 
+function getPlaybackInfo() {
+  const audioEl = findAudioElement();
+  const duration = getDuration();
+  const currentTime = audioEl ? audioEl.currentTime : 0;
+  const remaining = duration > currentTime ? duration - currentTime : 0;
+  
+  return {
+    currentTime: Math.floor(currentTime),
+    duration: Math.floor(duration),
+    remaining: Math.floor(remaining),
+    progress: duration > 0 ? (currentTime / duration * 100) : 0,
+    isPlaying: audioEl ? (!audioEl.paused && !audioEl.ended && audioEl.currentTime > 0) : false
+  };
+}
+
 function getDuration() {
   const audioEl = findAudioElement();
-  return audioEl && audioEl.duration ? audioEl.duration : 0;
+  if (audioEl && audioEl.duration && !isNaN(audioEl.duration) && isFinite(audioEl.duration)) {
+    return audioEl.duration;
+  }
+  
+  // Fallback: try to parse from UI duration display
+  const durationSelectors = [
+    '[data-testid="duration"]',
+    '[class*="duration"]',
+    '[class*="time"]'
+  ];
+  
+  for (const selector of durationSelectors) {
+    const el = document.querySelector(selector);
+    if (el && el.textContent?.trim()) {
+      const text = el.textContent.trim();
+      const match = text.match(/(\d+):(\d+)/);
+      if (match) {
+        return parseInt(match[1]) * 60 + parseInt(match[2]);
+      }
+    }
+  }
+  
+  return 0;
 }
 
 // ============ RECORDING FUNCTIONS ============
@@ -596,6 +643,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           currentTime: getCurrentTime(),
           duration: getDuration()
         });
+        break;
+        
+      case 'GET_PLAYBACK_INFO':
+        sendResponse({ playbackInfo: getPlaybackInfo() });
         break;
         
       case 'PING':
@@ -901,17 +952,17 @@ function updatePanelUI() {
   const queueListEl = container.querySelector('#suno-queue-list');
   const mainBtnIcon = container.querySelector('#suno-btn-icon');
   
-  // Update play state
-  const isPlaying = getPlayState();
+  // Update play state using enhanced playback info
+  const playbackInfo = getPlaybackInfo();
   const metadata = extractSongMetadata();
   
-  if (isPlaying) {
-    statusEl.textContent = '▶ Playing';
+  if (playbackInfo.isPlaying) {
+    statusEl.textContent = `▶ Playing (${formatTime(playbackInfo.currentTime * 1000)} / ${formatTime(playbackInfo.duration * 1000)})`;
     statusEl.style.color = '#4ade80';
     currentSongEl.style.display = 'block';
     songTitleEl.textContent = metadata.songName;
     songArtistEl.textContent = metadata.artist;
-    songDurationEl.textContent = metadata.duration ? formatTime(metadata.duration * 1000) : 'Unknown';
+    songDurationEl.textContent = playbackInfo.duration > 0 ? formatTime(playbackInfo.duration * 1000) : 'Unknown';
   } else {
     statusEl.textContent = '⏸ Paused / Stopped';
     statusEl.style.color = '#fbbf24';
@@ -950,11 +1001,11 @@ function updatePanelUI() {
   // Update queue preview
   safeSend({ type: 'GET_QUEUE' }).then(response => {
     const queue = response?.queue || [];
-    const pendingCount = queue.filter(item => item.status === 'pending' || item.status === 'recording' || item.status === 'encoding').length;
+    const activeCount = queue.filter(item => item.status === 'pending' || item.status === 'recording' || item.status === 'encoding').length;
     
-    if (pendingCount > 0) {
+    if (activeCount > 0) {
       queuePreviewEl.style.display = 'block';
-      queueCountEl.textContent = pendingCount;
+      queueCountEl.textContent = activeCount;
       
       queueListEl.innerHTML = queue
         .filter(item => item.status !== 'completed' && item.status !== 'failed')
@@ -962,7 +1013,7 @@ function updatePanelUI() {
           <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; background: #222; border-radius: 6px; margin-bottom: 4px; font-size: 11px;">
             <div style="flex: 1; min-width: 0;">
               <div style="color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.songName || 'Unknown'}</div>
-              <div style="color: #888; font-size: 10px;">${item.artist || 'Unknown'}</div>
+              <div style="color: #888; font-size: 10px;">${item.artist || 'Unknown'} ${item.duration ? `• ${formatTime(item.duration * 1000)}` : ''}</div>
             </div>
             <span style="color: ${item.status === 'recording' ? '#ff4500' : item.status === 'encoding' ? '#fbbf24' : '#4ade80'}; font-size: 10px; text-transform: capitalize;">${item.status}</span>
           </div>

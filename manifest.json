@@ -39,7 +39,7 @@
   ],
     "web_accessible_resources": [
     {
-      "resources": ["lamejs/lame.min.js", "lamejs/lame.wasm"],
+      "resources": ["lamejs/lame.min.js"],
       "matches": ["https://suno.com/*"]
     }
   ],

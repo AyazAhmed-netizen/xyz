@@ -248,28 +248,14 @@ function attachQueueItemListeners() {
     });
   });
   
-  // Retry buttons
+  // Retry buttons - use dedicated RETRY_QUEUE_ITEM handler
   document.querySelectorAll('.retry-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const id = btn.dataset.id;
-      // Re-add to queue with pending status
-      const response = await sendMessage('GET_QUEUE');
-      const queue = response?.queue || [];
-      const item = queue.find(i => i.id === id);
-      if (item) {
-        await sendMessage('REMOVE_FROM_QUEUE', { id });
-        await sendMessage('ADD_TO_QUEUE', { 
-          item: { 
-            songName: item.songName,
-            artist: item.artist,
-            duration: item.duration,
-            pageUrl: item.pageUrl
-          }
-        });
-        showToast('Retrying download...', 'info');
-        loadQueue();
-      }
+      await sendMessage('RETRY_QUEUE_ITEM', { id });
+      showToast('Retrying download...', 'info');
+      loadQueue();
     });
   });
   
@@ -304,7 +290,7 @@ elements.addCurrentBtn.addEventListener('click', async () => {
       showToast('Added to queue!', 'success');
       loadQueue();
     } else {
-      showToast('Could not get song info', 'error');
+      showToast('Could not get song info - play a song first', 'error');
     }
   } catch (error) {
     // Content script is missing or orphaned ("Extension context invalidated") - re-inject it
@@ -478,15 +464,14 @@ elements.permissionsBtn.addEventListener('click', () => {
 
 // ============ HEADER BUTTONS ============
 elements.refreshBtn.addEventListener('click', async () => {
-  elements.refreshBtn.style.transform = 'rotate(360deg)';
-  elements.refreshBtn.style.transition = 'transform 0.5s';
+  elements.refreshBtn.classList.add('spinning');
   
   if (currentTab === 'queue') await loadQueue();
   else if (currentTab === 'history') await loadHistory();
   else if (currentTab === 'settings') await loadSettings();
   
   setTimeout(() => {
-    elements.refreshBtn.style.transform = 'rotate(0deg)';
+    elements.refreshBtn.classList.remove('spinning');
   }, 500);
   
   showToast('Refreshed', 'success');
