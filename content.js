@@ -591,9 +591,10 @@ async function onRecordingStop() {
 
 function stopRecording() {
   if (mediaRecorder && mediaRecorder.state === 'recording') {
-    mediaRecorder.stop();
+    mediaRecorder.stop(); // onstop → onRecordingStop → resetRecordingState (sends RECORDING_COMPLETE first)
+  } else {
+    resetRecordingState();
   }
-  resetRecordingState();
 }
 
 function resetRecordingState() {
