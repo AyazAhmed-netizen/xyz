@@ -69,15 +69,22 @@ async function convertToMP3(audioBlob, quality = 192) {
     // Initialize MP3 encoder
     const mp3encoder = new lamejs.Mp3Encoder(numChannels, sampleRate, quality);
     
-    // Encode in chunks
+    // Encode in chunks with progress
     const chunkSize = 1152; // MP3 frame size
     const mp3Data = [];
+    const totalChunks = Math.ceil(pcmData.length / (chunkSize * numChannels));
     
     for (let i = 0; i < pcmData.length; i += chunkSize * numChannels) {
       const chunk = pcmData.subarray(i, i + chunkSize * numChannels);
       const mp3buf = mp3encoder.encodeBuffer(chunk);
       if (mp3buf.length > 0) {
         mp3Data.push(mp3buf);
+      }
+      
+      // Send progress
+      const progress = Math.min(100, Math.floor(((i / (chunkSize * numChannels)) / totalChunks) * 100));
+      if (progress % 10 === 0 || i === 0) { // Send every 10% to avoid flooding
+        self.postMessage({ type: 'MP3_PROGRESS', progress });
       }
     }
     

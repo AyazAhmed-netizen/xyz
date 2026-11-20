@@ -228,6 +228,18 @@ async function showNotification(title, message, type = 'basic') {
   }
 }
 
+async function notifyContentScript(message) {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true, url: 'https://suno.com/*' });
+    if (tab) {
+      await chrome.tabs.sendMessage(tab.id, message);
+    }
+  } catch (error) {
+    // Content script might not be ready, that's OK
+    console.debug('notifyContentScript:', error.message);
+  }
+}
+
 // ============ DOWNLOAD HANDLING ============
 async function handleDownloadComplete(item) {
   await updateQueueItem(item.id, { 
@@ -477,7 +489,8 @@ async function handleRecordingComplete(queueItemId, audioBlob, metadata) {
   const item = queue.find(i => i.id === queueItemId);
   if (!item) return;
   
-  await updateQueueItem(queueItemId, { status: 'encoding', progress: 50 });
+  await updateQueueItem(queueItemId, { status: 'encoding', progress: 0 });
+  await notifyContentScript({ type: 'ENCODING_PROGRESS', queueItemId, progress: 0 });
   
   const settings = await getSettings();
   let finalBlob = audioBlob;
@@ -486,14 +499,20 @@ async function handleRecordingComplete(queueItemId, audioBlob, metadata) {
   
   if (settings.autoConvertToMP3) {
     try {
-      // Convert to MP3 using offscreen document
-      finalBlob = await convertToMP3(audioBlob, settings.quality);
+      // Convert to MP3 using offscreen document with progress updates
+      finalBlob = await convertToMP3(audioBlob, settings.quality, (progress) => {
+        updateQueueItem(queueItemId, { progress: 50 + Math.floor(progress * 0.5) });
+        notifyContentScript({ type: 'ENCODING_PROGRESS', queueItemId, progress: 50 + Math.floor(progress * 0.5) });
+      });
       format = 'mp3';
       fileName = `${sanitizeFileName(item.songName || 'suno-track')}.mp3`;
     } catch (error) {
       console.warn('MP3 conversion failed, keeping WebM:', error);
     }
   }
+  
+  await updateQueueItem(queueItemId, { status: 'downloading', progress: 95 });
+  await notifyContentScript({ type: 'DOWNLOAD_PROGRESS', queueItemId, progress: 95 });
   
   // Download the file
   const url = URL.createObjectURL(finalBlob);
@@ -511,6 +530,8 @@ async function handleRecordingComplete(queueItemId, audioBlob, metadata) {
     fileSize: finalBlob.size,
     format
   });
+  
+  notifyContentScript({ type: 'DOWNLOAD_COMPLETE', queueItemId });
 }
 
 function sanitizeFileName(name) {
@@ -518,7 +539,7 @@ function sanitizeFileName(name) {
 }
 
 // ============ MP3 CONVERSION (via offscreen) ============
-async function convertToMP3(audioBlob, quality = 192) {
+async function convertToMP3(audioBlob, quality = 192, onProgress) {
   return new Promise((resolve, reject) => {
     const channel = new MessageChannel();
     
@@ -527,6 +548,8 @@ async function convertToMP3(audioBlob, quality = 192) {
         resolve(event.data.blob);
       } else if (event.data.type === 'MP3_ERROR') {
         reject(new Error(event.data.error));
+      } else if (event.data.type === 'MP3_PROGRESS' && onProgress) {
+        onProgress(event.data.progress);
       }
     };
     

@@ -161,15 +161,29 @@ function extractSongMetadata() {
     coverUrl: null
   };
   
-  // SCOPE: Extract ONLY from the bottom player bar to avoid sidebar username/feed headings
-  const playerBar =
+  // SCOPE: Extract ONLY from the bottom player bar (playbar)
+  // Suno's playbar is a fixed bottom element with data-[playbar] attribute
+  const playerBar = 
+    document.querySelector('[data-playbar="true"]') ||
+    document.querySelector('[data-[playbar]]:not([data-[playbar]=""])') ||
+    document.querySelector('div.in-has-data-\\[playbar\\]') ||
+    document.querySelector('div[class*="in-has-data-\\[playbar\\]"]') ||
+    document.querySelector('footer[class*="fixed"][class*="bottom"]') ||
     document.querySelector('[data-testid="player-bar"]') ||
-    document.querySelector('div[class*="player-bar"]') ||
-    document.querySelector('footer[class*="player"]') ||
     document.querySelector('[data-testid="playback-bar"]') ||
+    document.querySelector('div[class*="playbar"]') ||
+    document.querySelector('div[class*="Playbar"]') ||
+    document.querySelector('footer[class*="player"]') ||
     null;
 
   const scopes = playerBar ? [playerBar] : [];
+
+  // Debug log
+  if (playerBar) {
+    console.log('[Suno Downloader] Found playbar:', playerBar);
+  } else {
+    console.warn('[Suno Downloader] Playbar NOT found, metadata will use fallbacks');
+  }
 
   // Track title: look for the song title in the player bar ONLY
   for (const scope of scopes) {
@@ -178,21 +192,25 @@ function extractSongMetadata() {
       '[data-testid="song-title"]',
       '[data-testid="track-title"]',
       '[data-testid="playback-title"]',
+      '[data-testid="song-title"] span',
+      '[data-testid="track-title"] span',
       '[class*="SongTitle"]',
       '[class*="TrackTitle"]',
       '[class*="playback-title"]',
       '[class*="song-title"]',
-      '.song-title',
-      'h1[class*="title"]',
-      'h2[class*="title"]',
-      'h3[class*="title"]'
+      '[class*="title"]:not([class*="subtitle"]):not([class*="caption"])',
+      'h1', 'h2', 'h3', 'h4',
+      'span[class*="title"]',
+      'div[class*="title"]'
     ];
     for (const selector of titleSelectors) {
       const el = scope.querySelector(selector);
       const text = el?.textContent?.trim();
       // Filter out generic words like "Explore", "Library", "Create", etc.
-      if (text && !['explore', 'library', 'create', 'suno', 'home', 'search', 'playlist'].includes(text.toLowerCase())) {
-        metadata.songName = text; break; 
+      if (text && text.length > 1 && !['explore', 'library', 'create', 'suno', 'home', 'search', 'playlist', 'my library', 'liked songs'].includes(text.toLowerCase())) {
+        metadata.songName = text; 
+        console.log('[Suno Downloader] Found song name:', text, 'via selector:', selector);
+        break; 
       }
     }
   }
@@ -204,15 +222,22 @@ function extractSongMetadata() {
       '[data-testid="song-artist"]',
       '[data-testid="track-artist"]',
       '[data-testid="playback-artist"]',
+      '[data-testid="song-artist"] a',
+      '[data-testid="track-artist"] a',
       '[class*="Artist"] a',
       '[class*="artist"] a',
-      'a[href^="/@"]'
+      'a[href^="/@"]',
+      '[class*="artist"]',
+      '[class*="creator"]',
+      '[class*="author"]'
     ];
     for (const selector of artistSelectors) {
       const el = scope.querySelector(selector);
       const text = el?.textContent?.trim();
-      if (text && !['explore', 'library', 'create', 'suno', 'home', 'search'].includes(text.toLowerCase())) {
-        metadata.artist = text; break; 
+      if (text && text.length > 1 && !['explore', 'library', 'create', 'suno', 'home', 'search', 'playlist'].includes(text.toLowerCase())) {
+        metadata.artist = text; 
+        console.log('[Suno Downloader] Found artist:', text, 'via selector:', selector);
+        break; 
       }
     }
   }
@@ -223,6 +248,7 @@ function extractSongMetadata() {
     const m = t.match(/^(.+?)\s*[|·]\s*Suno/i);
     if (m && m[1].trim() && !['explore', 'library', 'create', 'suno', 'home', 'search'].includes(m[1].trim().toLowerCase())) {
       metadata.songName = m[1].trim();
+      console.log('[Suno Downloader] Found song name from document.title:', metadata.songName);
     }
   }
 
@@ -230,13 +256,16 @@ function extractSongMetadata() {
   const audioEl = findAudioElement();
   if (audioEl && audioEl.duration && !isNaN(audioEl.duration) && isFinite(audioEl.duration)) {
     metadata.duration = Math.floor(audioEl.duration);
+    console.log('[Suno Downloader] Found duration from audio element:', metadata.duration);
   } else {
     // Try UI duration display - ONLY in player bar
     const durationSelectors = [
       '[data-testid="duration"]',
       '[data-testid="playback-duration"]',
+      '[data-testid="song-duration"]',
+      '[data-testid="track-duration"]',
       '[class*="duration"]',
-      '[class*="time"]'
+      '[class*="time"]:not([class*="date"])'
     ];
     
     for (const selector of durationSelectors) {
@@ -246,6 +275,7 @@ function extractSongMetadata() {
         const match = text.match(/(\d+):(\d+)/);
         if (match) {
           metadata.duration = parseInt(match[1]) * 60 + parseInt(match[2]);
+          console.log('[Suno Downloader] Found duration from UI:', metadata.duration, 'via selector:', selector);
           break;
         }
       }
@@ -256,14 +286,21 @@ function extractSongMetadata() {
   const coverSelectors = [
     '[data-testid="song-cover"] img',
     '[data-testid="playback-cover"] img',
+    '[data-testid="track-cover"] img',
     '[class*="cover"] img',
-    '[class*="artwork"] img'
+    '[class*="artwork"] img',
+    '[class*="image"] img',
+    'img[alt*="cover"]',
+    'img[alt*="artwork"]',
+    'img[class*="cover"]',
+    'img[class*="artwork"]'
   ];
   
   for (const selector of coverSelectors) {
     const el = playerBar?.querySelector(selector) || document.querySelector(selector);
     if (el && el.src) {
       metadata.coverUrl = el.src;
+      console.log('[Suno Downloader] Found cover:', metadata.coverUrl, 'via selector:', selector);
       break;
     }
   }
@@ -273,6 +310,7 @@ function extractSongMetadata() {
     const urlMatch = window.location.href.match(/\/song\/([^/?]+)/);
     if (urlMatch) {
       metadata.songName = decodeURIComponent(urlMatch[1]).replace(/-/g, ' ');
+      console.log('[Suno Downloader] Found song name from URL:', metadata.songName);
     } else {
       metadata.songName = 'Suno Song';
     }
@@ -282,6 +320,7 @@ function extractSongMetadata() {
     metadata.artist = 'Unknown Artist';
   }
   
+  console.log('[Suno Downloader] Final metadata:', metadata);
   return metadata;
 }
 
@@ -703,6 +742,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true });
         break;
         
+      case 'ENCODING_PROGRESS':
+        updatePanelEncodingProgress(message.progress);
+        sendResponse({ success: true });
+        break;
+        
+      case 'DOWNLOAD_PROGRESS':
+        updatePanelDownloadProgress(message.progress);
+        sendResponse({ success: true });
+        break;
+        
       default:
         sendResponse({ error: 'Unknown message' });
     }
@@ -864,6 +913,30 @@ function createFloatingUI() {
         </div>
       </div>
       
+      <!-- Encoding progress UI -->
+      <div id="suno-encoding-ui" style="display: none; flex-direction: column; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px; color: #fbbf24;">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: #fbbf24; animation: pulse 1s infinite;"></span>
+          <span>Converting to MP3...</span>
+          <span id="suno-enc-time" style="margin-left: auto; font-variant-numeric: tabular-nums;">0%</span>
+        </div>
+        <div style="height: 4px; background: #333; border-radius: 2px; overflow: hidden;">
+          <div id="suno-enc-progress" style="height: 100%; background: linear-gradient(90deg, #fbbf24, #fcd34d); width: 0%; transition: width 0.3s;"></div>
+        </div>
+      </div>
+      
+      <!-- Download progress UI -->
+      <div id="suno-download-ui" style="display: none; flex-direction: column; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px; color: #4ade80;">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: #4ade80; animation: pulse 1s infinite;"></span>
+          <span>Downloading...</span>
+          <span id="suno-dl-time" style="margin-left: auto; font-variant-numeric: tabular-nums;">0%</span>
+        </div>
+        <div style="height: 4px; background: #333; border-radius: 2px; overflow: hidden;">
+          <div id="suno-dl-progress" style="height: 100%; background: linear-gradient(90deg, #4ade80, #22c55e); width: 0%; transition: width 0.3s;"></div>
+        </div>
+      </div>
+      
       <button id="suno-manual-record" style="
         padding: 12px;
         border-radius: 10px;
@@ -984,6 +1057,8 @@ function updatePanelUI() {
   const songArtistEl = container.querySelector('#suno-song-artist');
   const songDurationEl = container.querySelector('#suno-song-duration');
   const recordingUiEl = container.querySelector('#suno-recording-ui');
+  const encodingUiEl = container.querySelector('#suno-encoding-ui');
+  const downloadUiEl = container.querySelector('#suno-download-ui');
   const recTimeEl = container.querySelector('#suno-rec-time');
   const recProgressEl = container.querySelector('#suno-rec-progress');
   const manualRecordBtn = container.querySelector('#suno-manual-record');
@@ -1008,35 +1083,89 @@ function updatePanelUI() {
     statusEl.style.color = '#fbbf24';
   }
   
-  // Update recording state
-  if (isRecording) {
-    recordingUiEl.style.display = 'flex';
-    manualRecordBtn.style.display = 'none';
-    manualRecordBtn.textContent = '🎙️ Start Recording';
+  // Update recording/encoding/download state from queue
+  safeSend({ type: 'GET_QUEUE' }).then(response => {
+    const queue = response?.queue || [];
+    const activeItem = queue.find(item => 
+      item.status === 'recording' || item.status === 'encoding' || item.status === 'downloading'
+    );
     
-    const elapsed = recordingStartTime ? Date.now() - recordingStartTime : 0;
-    recTimeEl.textContent = formatTime(elapsed);
+    if (activeItem) {
+      if (activeItem.status === 'recording') {
+        if (recordingUiEl) recordingUiEl.style.display = 'flex';
+        if (encodingUiEl) encodingUiEl.style.display = 'none';
+        if (downloadUiEl) downloadUiEl.style.display = 'none';
+        manualRecordBtn.style.display = 'none';
+        
+        const elapsed = activeItem.startedAt ? Date.now() - activeItem.startedAt : 0;
+        if (recTimeEl) recTimeEl.textContent = formatTime(elapsed);
+        
+        const expectedDuration = activeItem.duration * 1000 || 180000;
+        const progress = Math.min(100, (elapsed / expectedDuration) * 100);
+        if (recProgressEl) recProgressEl.style.width = `${progress}%`;
+        
+        mainBtnIcon.innerHTML = `
+          <rect x="6" y="4" width="12" height="16" rx="2" fill="white"/>
+        `;
+        container.querySelector('#suno-main-btn').style.background = 'linear-gradient(135deg, #dc3545, #ff4500)';
+      } else if (activeItem.status === 'encoding') {
+        if (recordingUiEl) recordingUiEl.style.display = 'none';
+        if (encodingUiEl) encodingUiEl.style.display = 'flex';
+        if (downloadUiEl) downloadUiEl.style.display = 'none';
+        manualRecordBtn.style.display = 'none';
+        
+        mainBtnIcon.innerHTML = `
+          <rect x="6" y="4" width="12" height="16" rx="2" fill="white"/>
+        `;
+        container.querySelector('#suno-main-btn').style.background = 'linear-gradient(135deg, #fbbf24, #fcd34d)';
+      } else if (activeItem.status === 'downloading') {
+        if (recordingUiEl) recordingUiEl.style.display = 'none';
+        if (encodingUiEl) encodingUiEl.style.display = 'none';
+        if (downloadUiEl) downloadUiEl.style.display = 'flex';
+        manualRecordBtn.style.display = 'none';
+        
+        mainBtnIcon.innerHTML = `
+          <rect x="6" y="4" width="12" height="16" rx="2" fill="white"/>
+        `;
+        container.querySelector('#suno-main-btn').style.background = 'linear-gradient(135deg, #4ade80, #22c55e)';
+      }
+    } else if (!isRecording) {
+      // No active queue item and not recording
+      if (recordingUiEl) recordingUiEl.style.display = 'none';
+      if (encodingUiEl) encodingUiEl.style.display = 'none';
+      if (downloadUiEl) downloadUiEl.style.display = 'none';
+      manualRecordBtn.style.display = 'block';
+      
+      // Reset main button
+      mainBtnIcon.innerHTML = `
+        <circle cx="12" cy="12" r="10" />
+        <circle cx="12" cy="12" r="4" fill="white" />
+      `;
+      container.querySelector('#suno-main-btn').style.background = 'linear-gradient(135deg, #ff4500, #ff6b35)';
+    }
     
-    const expectedDuration = currentSongMetadata?.duration * 1000 || 180000;
-    const progress = Math.min(100, (elapsed / expectedDuration) * 100);
-    recProgressEl.style.width = `${progress}%`;
+    // Update queue preview
+    const activeCount = queue.filter(item => item.status === 'pending' || item.status === 'recording' || item.status === 'encoding' || item.status === 'downloading').length;
     
-    // Update main button to show recording
-    mainBtnIcon.innerHTML = `
-      <rect x="6" y="4" width="12" height="16" rx="2" fill="white"/>
-    `;
-    container.querySelector('#suno-main-btn').style.background = 'linear-gradient(135deg, #dc3545, #ff4500)';
-  } else {
-    recordingUiEl.style.display = 'none';
-    manualRecordBtn.style.display = 'block';
-    
-    // Reset main button
-    mainBtnIcon.innerHTML = `
-      <circle cx="12" cy="12" r="10" />
-      <circle cx="12" cy="12" r="4" fill="white" />
-    `;
-    container.querySelector('#suno-main-btn').style.background = 'linear-gradient(135deg, #ff4500, #ff6b35)';
-  }
+    if (activeCount > 0) {
+      queuePreviewEl.style.display = 'block';
+      queueCountEl.textContent = activeCount;
+      
+      queueListEl.innerHTML = queue
+        .filter(item => item.status !== 'completed' && item.status !== 'failed')
+        .map(item => `
+          <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; background: #222; border-radius: 6px; margin-bottom: 4px; font-size: 11px;">
+            <div style="flex: 1; min-width: 0;">
+              <div style="color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.songName || 'Unknown'}</div>
+              <div style="color: #888; font-size: 10px;">${item.artist || 'Unknown'} ${item.duration ? `• ${formatTime(item.duration * 1000)}` : ''}</div>
+            </div>
+            <span style="color: ${item.status === 'recording' ? '#ff4500' : item.status === 'encoding' ? '#fbbf24' : item.status === 'downloading' ? '#4ade80' : '#4ade80'}; font-size: 10px; text-transform: capitalize;">${item.status}</span>
+          </div>
+        `).join('');
+    } else {
+      queuePreviewEl.style.display = 'none';
+    }
+  }).catch(() => {});
   
   // Update queue preview
   safeSend({ type: 'GET_QUEUE' }).then(response => {
@@ -1062,6 +1191,43 @@ function updatePanelUI() {
       queuePreviewEl.style.display = 'none';
     }
   }).catch(() => {});
+}
+
+// Progress handler functions for panel
+function updatePanelEncodingProgress(progress) {
+  const container = document.getElementById('suno-advanced-ui');
+  if (!container) return;
+  
+  const recordingUiEl = container.querySelector('#suno-recording-ui');
+  const encodingUiEl = container.querySelector('#suno-encoding-ui');
+  const downloadUiEl = container.querySelector('#suno-download-ui');
+  const encProgressEl = container.querySelector('#suno-enc-progress');
+  const encTimeEl = container.querySelector('#suno-enc-time');
+  
+  if (recordingUiEl) recordingUiEl.style.display = 'none';
+  if (encodingUiEl) encodingUiEl.style.display = 'flex';
+  if (downloadUiEl) downloadUiEl.style.display = 'none';
+  
+  if (encProgressEl) encProgressEl.style.width = `${progress}%`;
+  if (encTimeEl) encTimeEl.textContent = `${progress}%`;
+}
+
+function updatePanelDownloadProgress(progress) {
+  const container = document.getElementById('suno-advanced-ui');
+  if (!container) return;
+  
+  const recordingUiEl = container.querySelector('#suno-recording-ui');
+  const encodingUiEl = container.querySelector('#suno-encoding-ui');
+  const downloadUiEl = container.querySelector('#suno-download-ui');
+  const dlProgressEl = container.querySelector('#suno-dl-progress');
+  const dlTimeEl = container.querySelector('#suno-dl-time');
+  
+  if (recordingUiEl) recordingUiEl.style.display = 'none';
+  if (encodingUiEl) encodingUiEl.style.display = 'none';
+  if (downloadUiEl) downloadUiEl.style.display = 'flex';
+  
+  if (dlProgressEl) dlProgressEl.style.width = `${progress}%`;
+  if (dlTimeEl) dlTimeEl.textContent = `${progress}%`;
 }
 
 // ============ INITIALIZATION ============
