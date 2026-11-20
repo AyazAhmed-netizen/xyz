@@ -38,31 +38,35 @@ async function initStorage() {
 }
 
 async function resumeQueue() {
-  const queue = await getQueue();
-  const inProgress = queue.filter(item => 
-    item.status === 'recording' || item.status === 'encoding'
-  );
+  try {
+    const queue = await getQueue();
+    const inProgress = queue.filter(item => 
+      item.status === 'recording' || item.status === 'encoding'
+    );
   
-  // Reset stuck items to pending so they can be retried
-  for (const item of inProgress) {
-    await updateQueueItem(item.id, { 
-      status: 'failed', 
-      error: 'Interrupted - click retry to restart',
-      progress: 0 
-    });
-  }
+    // Reset stuck items to pending so they can be retried
+    for (const item of inProgress) {
+      await updateQueueItem(item.id, { 
+        status: 'failed', 
+        error: 'Interrupted - click retry to restart',
+        progress: 0 
+      });
+    }
   
-  // Update badge
-  await updateBadge();
+    // Update badge
+    await updateBadge();
   
-  // If there are pending items, start processing
-  const pending = queue.filter(item => item.status === 'pending');
-  if (pending.length > 0 && !isProcessing) {
-    processQueue();
+    // If there are pending items, start processing
+    const pending = queue.filter(item => item.status === 'pending');
+    if (pending.length > 0 && !isProcessing) {
+      await processQueue().catch(err => console.error('processQueue failed:', err));
+    }
+  } catch (err) {
+    console.error('resumeQueue failed:', err);
   }
 }
 
-initStorage();
+initStorage().catch(err => console.error('initStorage failed:', err));
 
 // ============ QUEUE MANAGEMENT ============
 async function getQueue() {
@@ -515,14 +519,24 @@ async function handleRecordingComplete(queueItemId, audioBlob, metadata) {
   await notifyContentScript({ type: 'DOWNLOAD_PROGRESS', queueItemId, progress: 95 });
   
   // Download the file
-  const url = URL.createObjectURL(finalBlob);
+  let url;
+  try {
+    url = self.URL.createObjectURL(finalBlob);
+  } catch (e) {
+    console.warn('self.URL.createObjectURL failed, trying URL:', e);
+    url = URL.createObjectURL(finalBlob);
+  }
   await chrome.downloads.download({
     url,
     filename: `${settings.downloadFolder}/${fileName}`,
     saveAs: false
   });
-  
-  URL.revokeObjectURL(url);
+
+  try {
+    self.URL.revokeObjectURL(url);
+  } catch (e) {
+    URL.revokeObjectURL(url);
+  }
   
   await handleDownloadComplete({
     ...item,
