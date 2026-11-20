@@ -372,30 +372,40 @@ function extractSongMetadata() {
 }
 
 function findAudioElement() {
-  // Find the main audio player - try multiple strategies
-  const selectors = [
-    'audio[data-testid="audio-player"]',
-    'audio[class*="player"]',
-    'audio[controls]',
-    'audio',
-    'video' // Sometimes Suno uses video element for audio
-  ];
-  
-  for (const selector of selectors) {
-    const el = document.querySelector(selector);
-    if (el && (el.src || el.currentSrc || el.querySelector('source') || el.duration)) {
-      return el;
+  // 1. First try to find audio within the playbar scope (currently playing song)
+  const playerBar =
+    document.querySelector('[data-playbar="true"]') ||
+    document.querySelector('[data-[playbar]]:not([data-[playbar]=""])') ||
+    document.querySelector('[data-testid="player-bar"]') ||
+    document.querySelector('[data-testid="playback-bar"]') ||
+    document.querySelector('div[class*="playbar"]') ||
+    document.querySelector('div[class*="Playbar"]') ||
+    document.querySelector('footer[class*="fixed"][class*="bottom"]') ||
+    document.querySelector('footer[class*="player"]') ||
+    null;
+
+  if (playerBar) {
+    const audioInPlaybar = playerBar.querySelector('audio') || playerBar.querySelector('video');
+    if (audioInPlaybar && (audioInPlaybar.src || audioInPlaybar.currentSrc || audioInPlaybar.querySelector('source') || audioInPlaybar.duration)) {
+      return audioInPlaybar;
     }
   }
-  
-  // Fallback: look for any audio/video element that has a duration
+
+  // 2. Find actively playing audio (not paused, currentTime > 0)
   const allMedia = document.querySelectorAll('audio, video');
   for (const el of allMedia) {
-    if (el.duration && !isNaN(el.duration) && isFinite(el.duration)) {
+    if (!el.paused && el.currentTime > 0 && el.duration && !isNaN(el.duration) && isFinite(el.duration)) {
       return el;
     }
   }
-  
+
+  // 3. Fallback: any audio/video with valid duration > 0
+  for (const el of allMedia) {
+    if (el.duration && !isNaN(el.duration) && isFinite(el.duration) && el.duration > 0) {
+      return el;
+    }
+  }
+
   return null;
 }
 
@@ -750,7 +760,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
       case 'START_RECORDING':
         // Manual or queued recording start
-        const metadata = message.metadata || extractSongMetadata();
+        let metadata = message.metadata;
+        if (!metadata) {
+          metadata = extractSongMetadata();
+          // Override with message fields from queue (more reliable than re-extraction)
+          if (message.songName) metadata.songName = message.songName;
+          if (message.artist) metadata.artist = message.artist;
+          if (message.duration) metadata.duration = message.duration;
+          if (message.pageUrl) metadata.pageUrl = message.pageUrl;
+        }
         const success = await startRecording(message.queueItemId, metadata);
         sendResponse({ success });
         break;
