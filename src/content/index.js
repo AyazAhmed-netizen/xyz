@@ -10,7 +10,8 @@ import {
   RECORDING_CONFIG,
   formatTime,
   generateId,
-  isSunoUrl
+  isSunoUrl,
+  bufferToBase64
 } from '../shared/constants.js';
 
 // ============ STATE ============
@@ -24,40 +25,61 @@ let panel = null;
 let isRecording = false;
 
 // ============ UTILITY FUNCTIONS ============
+// sendMessage rejects when nothing is listening (e.g. side panel closed).
+function safeSend(message, callback) {
+  try {
+    const p = chrome.runtime.sendMessage(message, callback);
+    if (p && p.catch) p.catch(() => {});
+  } catch (e) { /* extension reloaded / context invalidated */ }
+}
+
 function log(...args) {
   console.log('[Suno Advanced]', ...args);
 }
 
 function findPlaybar() {
   for (const selector of PLAYBAR_SELECTORS) {
-    const el = document.querySelector(selector);
-    if (el) return el;
+    try {
+      const el = document.querySelector(selector);
+      if (el) return el;
+    } catch (e) {
+      log('Invalid playbar selector:', selector, e.message);
+    }
   }
   return null;
 }
 
+// Suno keeps a placeholder <audio> (forbidden.webm / silence) until a song is loaded.
+function isPlaceholderAudio(el) {
+  const src = el.currentSrc || el.src || '';
+  return el.id === 'silent-audio' || /forbidden\.webm|sil-100|silent/i.test(src);
+}
+
 function findAudioElement() {
-  // 1. Audio within playbar (currently playing song)
-  const playbar = findPlaybar();
-  if (playbar) {
-    const audioInPlaybar = playbar.querySelector('audio') || playbar.querySelector('video');
-    if (audioInPlaybar && (audioInPlaybar.src || audioInPlaybar.currentSrc || audioInPlaybar.querySelector('source') || audioInPlaybar.duration)) {
-      log('Found audio in playbar');
-      return audioInPlaybar;
-    }
+  // 1. Suno's real player element (skip the silent-audio decoy)
+  for (const selector of AUDIO_SELECTORS) {
+    try {
+      const el = document.querySelector(selector);
+      if (el && !isPlaceholderAudio(el) && (el.currentSrc || el.src || el.querySelector('source'))) {
+        log('Found active audio via', selector);
+        return el;
+      }
+    } catch (e) { /* invalid selector - skip */ }
   }
 
   // 2. Actively playing audio (not paused, currentTime > 0)
   const allMedia = document.querySelectorAll('audio, video');
   for (const el of allMedia) {
+    if (isPlaceholderAudio(el)) continue;
     if (!el.paused && el.currentTime > 0 && el.duration && !isNaN(el.duration) && isFinite(el.duration)) {
       log('Found actively playing audio');
       return el;
     }
   }
 
-  // 3. Any audio/video with valid duration > 0
+  // 3. Any non-decoy audio/video with a valid duration > 0
   for (const el of allMedia) {
+    if (isPlaceholderAudio(el)) continue;
     if (el.duration && !isNaN(el.duration) && isFinite(el.duration) && el.duration > 0) {
       log('Found audio with duration');
       return el;
@@ -65,6 +87,22 @@ function findAudioElement() {
   }
 
   return null;
+}
+
+// Fallback: scan performance entries for the audio file Suno fetched. This
+// covers players that feed audio via MediaSource/blob instead of audio.src.
+function findRecentAudioUrl() {
+  try {
+    const entries = performance.getEntriesByType('resource')
+      .filter(e => /cdn(-o)?\.suno\.com|\.suno\.com\/.*\.(mp3|m4a|ogg|wav)/i.test(e.name))
+      .filter(e => !/sil-100|silent/i.test(e.name))
+      .sort((a, b) => b.responseEnd - a.responseEnd);
+    if (entries.length) {
+      log('Found recent audio URL:', entries[0].name);
+      return entries[0].name;
+    }
+  } catch (e) { /* ignore */ }
+  return '';
 }
 
 function isValidText(text, excludedList) {
@@ -84,15 +122,50 @@ function extractSongMetadata() {
   };
 
   const playbar = findPlaybar();
-  const scopes = playbar ? [playbar] : [];
+  const audioEl = findAudioElement();
 
+  // Suno's playbar labels: "Playbar: Title for <song>", "Playbar: Artist for <song>"
   if (playbar) {
-    log('Found playbar:', playbar);
-  } else {
-    log('Playbar NOT found, using page-level fallbacks');
+    const t = playbar.querySelector('[aria-label^="Playbar: Title for "]');
+    const tText = t && (t.textContent.trim() || t.getAttribute('aria-label').replace(/^Playbar: Title for /, '').trim());
+    if (tText) metadata.songName = tText;
+    const a = playbar.querySelector('[aria-label^="Playbar: Artist for "]');
+    if (a && a.textContent.trim()) metadata.artist = a.textContent.trim();
+    const link = playbar.querySelector('a[href^="/song/"]');
+    if (link) metadata.pageUrl = new URL(link.getAttribute('href'), location.origin).href;
+    const img = playbar.querySelector('img[src^="http"]');
+    if (img) metadata.coverUrl = img.src;
   }
 
-  // --- 1. Song title from playbar ---
+  // Build search scopes. On explore page there is no playbar; the bottom player
+  // audio element lives outside any song card. We must search within the audio
+  // element's own ancestor chain first so we pick up the mini-player's song
+  // title ("those eyes") instead of a random playlist title elsewhere on page.
+  const scopes = [];
+  if (playbar) scopes.push(playbar);
+
+  if (audioEl) {
+    // Collect the audio element's ancestor containers (player bar, footer, etc.)
+    let ancestor = audioEl.parentElement;
+    while (ancestor && ancestor !== document.body) {
+      scopes.push(ancestor);
+      ancestor = ancestor.parentElement;
+    }
+    // Also try to find a song card marked as currently playing/active
+    const activeCard = document.querySelector(
+      '[class*="song"][class*="active" i], [class*="track"][class*="active" i], ' +
+      '[class*="song"][class*="playing" i], [class*="track"][class*="playing" i], ' +
+      '[data-testid*="song"][class*="active" i], [data-testid*="song"][class*="playing" i]'
+    );
+    if (activeCard && !scopes.includes(activeCard)) scopes.push(activeCard);
+    log('Found audio element, searching', scopes.length, 'ancestor scopes + active card');
+  } else {
+    log('No playbar or audio element found');
+  }
+  // document.body is LAST resort — never let a random page title override the player.
+  scopes.push(document.body);
+
+  // --- 1. Song title from playbar/audio-context or page ---
   if (!metadata.songName) {
     for (const scope of scopes) {
       if (metadata.songName) break;
@@ -100,14 +173,28 @@ function extractSongMetadata() {
         '[data-testid="song-title"]',
         '[data-testid="track-title"]',
         '[data-testid="playback-title"]',
+        '[data-testid*="current-song"]',
+        '[data-testid*="now-playing"]',
         '[class*="SongTitle"]',
         '[class*="TrackTitle"]',
         '[class*="playback-title"]',
         '[class*="song-title"]',
-        'h1', 'h2', 'h3', 'h4',
-        'span[class*="title"]',
-        'div[class*="title"]'
+        '[class*="track-name"]',
+        '[class*="current-song"]',
+        '[class*="now-playing"]',
+        '[class*="mini-player"] [class*="title"]',
+        'footer [class*="title"]',
+        '[class*="player-bar"] [class*="title"]',
+        '[class*="bottom-bar"] [class*="title"]'
       ];
+      // Only use generic heading tags on non-body scopes (playbar / audio ancestors).
+      // Using h1-h4 on document.body would pick up playlist titles like "Best Of".
+      const isBodyScope = scope === document.body;
+      if (!isBodyScope) {
+        titleSelectors.push('h1', 'h2', 'h3', 'h4');
+      }
+      titleSelectors.push('span[class*="title"]', 'div[class*="title"]');
+
       for (const selector of titleSelectors) {
         const el = scope.querySelector(selector);
         const text = el?.textContent?.trim();
@@ -117,10 +204,21 @@ function extractSongMetadata() {
           break;
         }
       }
+
+      // If still no title on an audio-ancestor scope, do a broader text scan
+      // (any element with plausible song-title text near the player).
+      if (!metadata.songName && scope !== document.body && audioEl) {
+        const broader = findPlausibleSongTitle(scope, audioEl);
+        if (broader) {
+          metadata.songName = broader;
+          log('Found song name (broader scan):', broader);
+          break;
+        }
+      }
     }
   }
 
-  // --- 2. Artist from playbar ---
+  // --- 2. Artist from playbar/audio-context or page ---
   if (!metadata.artist) {
     for (const scope of scopes) {
       if (metadata.artist) break;
@@ -128,13 +226,23 @@ function extractSongMetadata() {
         '[data-testid="song-artist"]',
         '[data-testid="track-artist"]',
         '[data-testid="playback-artist"]',
+        '[data-testid*="current-artist"]',
+        '[data-testid*="now-playing-artist"]',
         '[class*="Artist"] a',
         '[class*="artist"] a',
+        '[class*="current-artist"]',
+        '[class*="now-playing-artist"]',
         'a[href^="/@"]',
+        'footer a[href^="/@"]',
         '[class*="artist"]',
         '[class*="creator"]',
-        '[class*="author"]'
+        '[class*="author"]',
+        '[class*="username"]'
       ];
+      const isBodyScope = scope === document.body;
+      if (!isBodyScope) {
+        artistSelectors.push('span[class*="artist"]', 'div[class*="artist"]');
+      }
       for (const selector of artistSelectors) {
         const el = scope.querySelector(selector);
         const text = el?.textContent?.trim();
@@ -147,7 +255,49 @@ function extractSongMetadata() {
     }
   }
 
-  // --- 3. Open Graph / meta tag fallbacks (works on /explore too) ---
+  // Broader scan: find any element near the audio element whose text looks like
+// a song title (short, not excluded, not UI boilerplate).
+function findPlausibleSongTitle(rootScope, audioEl) {
+  const candidates = [];
+  const walker = document.createTreeWalker(
+    rootScope,
+    NodeFilter.SHOW_ELEMENT,
+    {
+      acceptNode: (node) => {
+        const tag = node.tagName?.toLowerCase();
+        // Only consider text-bearing elements
+        if (!['span', 'div', 'p', 'h1', 'h2', 'h3', 'h4', 'a'].includes(tag)) {
+          return NodeFilter.FILTER_SKIP;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+  let node;
+  while ((node = walker.nextNode())) {
+    const text = node.textContent?.trim();
+    if (!text || text.length < 2 || text.length > 120) continue;
+    const lower = text.toLowerCase();
+    // Skip excluded / UI texts
+    if (EXCLUDED_TEXTS.includes(lower)) continue;
+    if (lower.includes('explore') || lower.includes('library') || lower.includes('create') ||
+        lower.includes('playlist') || lower.includes('for you') || lower.includes('best of') ||
+        lower.includes('suno') || lower.includes('home') || lower.includes('search')) continue;
+    // Prefer elements closer to the audio element
+    const distance = node.contains(audioEl) || audioEl.contains(node) ? 0 : 1;
+    candidates.push({ text, distance });
+  }
+  if (candidates.length === 0) return null;
+  // Sort: closest to audio first, then shortest text (song titles are short)
+  candidates.sort((a, b) => a.distance - b.distance || a.text.length - b.text.length);
+  return candidates[0].text;
+}
+
+  // --- 3. Open Graph / document title fallbacks ---
+  // Try these on any page where audio is playing. isValidText() filters out
+  // generic page titles like "Explore | Suno" so they won't false-positive.
+  const hasPlayingAudio = !!audioEl && !audioEl.paused && audioEl.currentTime > 0;
+
   if (!metadata.songName) {
     const ogTitle = document.querySelector('meta[property="og:title"]')?.content ||
                     document.querySelector('meta[name="og:title"]')?.content;
@@ -287,22 +437,100 @@ function getPlayState() {
   };
 }
 
+// ============ AUTO PLAYBACK ============
+function sleepMs(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+async function waitFor(fn, timeoutMs = 10000, stepMs = 200) {
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    const v = fn();
+    if (v) return v;
+    if (Date.now() > end) return null;
+    await sleepMs(stepMs);
+  }
+}
+
+function isUsable(btn) {
+  return btn && !btn.disabled && !btn.hasAttribute('data-trigger-disabled') && btn.offsetParent !== null;
+}
+
+// Click the song's own play button (song page), else the playbar's.
+function clickPlayButton() {
+  const pageButtons = [...document.querySelectorAll('button[aria-label]')].filter((b) => {
+    const l = b.getAttribute('aria-label') || '';
+    return /^play( song| this song| clip| track)?$/i.test(l.trim()) && isUsable(b);
+  });
+  const playbarBtn = document.querySelector('button[aria-label="Playbar: Play button"]');
+  const target = pageButtons[0] || (isUsable(playbarBtn) ? playbarBtn : null);
+  if (target) { target.click(); return true; }
+  return false;
+}
+
+// Make sure a real song is loaded and playing; start it ourselves if not.
+async function ensureAudioPlaying() {
+  let audio = findAudioElement();
+
+  if (!audio) {
+    clickPlayButton();
+    audio = await waitFor(() => findAudioElement(), 12000);
+  }
+  if (!audio) {
+    throw new Error('Could not start the song automatically. Open the song page (or press play once on Suno) and try again.');
+  }
+
+  if (audio.paused) {
+    try { await audio.play(); } catch (e) { clickPlayButton(); }
+    await waitFor(() => !audio.paused, 4000);
+  }
+  // Wait for real media metadata so we know the true duration.
+  await waitFor(() => Number.isFinite(audio.duration) && audio.duration > 0, 6000);
+  return audio;
+}
+
 // ============ RECORDING STATE MACHINE ============
 async function startRecording(queueItemId, metadata) {
   log('Starting recording for:', queueItemId);
+
+  // Never reset/steal state from a recording that is already running.
+  if (isRecording) {
+    safeSend({
+      type: MESSAGE_TYPES.RECORDING_ERROR,
+      queueItemId,
+      error: 'A recording is already in progress.'
+    });
+    return false;
+  }
   
   try {
     // Get the currently playing audio
-    const audioEl = findAudioElement();
-    if (!audioEl) {
-      throw new Error('No audio element found. Please play a song on Suno first.');
-    }
+    const audioEl = await ensureAudioPlaying();
     
     currentAudioElement = audioEl;
     currentQueueItemId = queueItemId;
     isRecording = true;
-    recordingStartTime = Date.now();
     recordedChunks = [];
+
+    // Recording captures live playback, so start from the top of the track;
+    // otherwise clicking Download mid-song would save only the tail.
+    if (audioEl.currentTime > 1) {
+      audioEl.currentTime = 0;
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1500);
+        audioEl.addEventListener('seeked', () => { clearTimeout(timer); resolve(); }, { once: true });
+      });
+    }
+
+    if (audioEl.paused) {
+      try { await audioEl.play(); } catch (e) {
+        throw new Error('Audio is paused and could not be resumed automatically.');
+      }
+    }
+
+    // Prefer the real media duration over scraped UI text.
+    const realDuration = Number.isFinite(audioEl.duration) && audioEl.duration > 0
+      ? Math.floor(audioEl.duration * 1000) : 0;
+    const totalDuration = realDuration || metadata.duration || 0;
+    recordingStartTime = Date.now();
 
     // Create MediaRecorder from audio element
     const stream = audioEl.captureStream ? audioEl.captureStream() : audioEl.srcObject;
@@ -310,77 +538,87 @@ async function startRecording(queueItemId, metadata) {
       throw new Error('Could not capture audio stream. Browser may not support captureStream.');
     }
 
+    // Verify the stream has audio tracks
+    const audioTracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
+    if (audioTracks.length === 0) {
+      throw new Error('No audio tracks available to record. Make sure the song is playing and not muted.');
+    }
+
     // Find supported MIME type
-    let mimeType = RECORDING_CONFIG.MIME_TYPES.find(type => MediaRecorder.isTypeSupported(type));
+    const mimeType = RECORDING_CONFIG.MIME_TYPES.find(type => MediaRecorder.isTypeSupported(type));
     if (!mimeType) {
       throw new Error('No supported audio format found');
     }
     log('Using mime type:', mimeType);
 
-    mediaRecorder = new MediaRecorder(stream, { mimeType });
-    
-    mediaRecorder.ondataavailable = (event) => {
+    const recordingId = queueItemId;
+    const recorder = new MediaRecorder(stream, { mimeType });
+    mediaRecorder = recorder;
+
+    recorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
         recordedChunks.push(event.data);
       }
     };
 
-    mediaRecorder.onstop = async () => {
+    recorder.onstop = async () => {
       log('MediaRecorder stopped');
       const audioBlob = new Blob(recordedChunks, { type: mimeType });
       log('Recording complete, blob size:', audioBlob.size);
-      
-      // Send completion to background
-      chrome.runtime.sendMessage({
+
+      // Binary can't cross extension messaging (JSON) - send base64.
+      const b64 = bufferToBase64(await audioBlob.arrayBuffer());
+      safeSend({
         type: MESSAGE_TYPES.RECORDING_COMPLETE,
-        queueItemId: currentQueueItemId,
-        audioBlob,
-        metadata
+        queueItemId: recordingId,
+        b64,
+        mimeType
       });
-      
+
+      // Song is captured - stop Suno's player so it doesn't roll into the next track.
+      try { audioEl.pause(); } catch (e) { /* ignore */ }
+
       // Reset state AFTER sending completion
       resetRecordingState();
     };
 
-    mediaRecorder.onerror = (event) => {
-      log('MediaRecorder error:', event.error);
-      chrome.runtime.sendMessage({
+    recorder.onerror = (event) => {
+      const errMsg = event.error?.message || String(event.error || 'Recording failed');
+      log('MediaRecorder error:', errMsg);
+      safeSend({
         type: MESSAGE_TYPES.RECORDING_ERROR,
-        queueItemId: currentQueueItemId,
-        error: event.error?.message || 'Recording failed'
+        queueItemId: recordingId,
+        error: errMsg
       });
       resetRecordingState();
     };
 
-    mediaRecorder.start(RECORDING_CONFIG.CHUNK_INTERVAL_MS);
+    recorder.start(RECORDING_CONFIG.CHUNK_INTERVAL_MS);
     log('MediaRecorder started');
 
-    // Start progress tracking
-    startProgressTracking(metadata.duration);
-    
-    // Notify background
-    chrome.runtime.sendMessage({
-      type: MESSAGE_TYPES.RECORDING_STARTED,
-      queueItemId
-    });
-
-    // Notify UI
-    notifyContentScript({
-      type: MESSAGE_TYPES.RECORDING_STARTED,
-      queueItemId
-    });
+    startProgressTracking(totalDuration);
+    // Metadata is most reliable once the song is actually loaded in the playbar.
+    const live = extractSongMetadata();
+    const liveMeta = {};
+    if (live.songName && live.songName !== 'Suno Song') liveMeta.songName = live.songName;
+    if (live.artist && live.artist !== 'Unknown Artist') liveMeta.artist = live.artist;
+    if (live.coverUrl) liveMeta.coverUrl = live.coverUrl;
+    if (live.pageUrl) liveMeta.pageUrl = live.pageUrl;
+    if (totalDuration) liveMeta.duration = totalDuration;
+    safeSend({ type: MESSAGE_TYPES.RECORDING_STARTED, queueItemId, metadata: liveMeta });
 
     // Auto-stop when song ends
-    monitorSongEnd(metadata.duration);
+    monitorSongEnd(totalDuration);
 
     return true;
   } catch (error) {
-    log('Recording failed:', error);
+    const errMsg = error?.message || String(error);
+    log('Recording failed:', errMsg);
     resetRecordingState();
-    chrome.runtime.sendMessage({
+    safeSend({
       type: MESSAGE_TYPES.RECORDING_ERROR,
       queueItemId,
-      error: error.message
+      error: errMsg
     });
     return false;
   }
@@ -409,8 +647,6 @@ function resetRecordingState() {
   recordingStartTime = 0;
   currentAudioElement = null;
   isRecording = false;
-  
-  notifyContentScript({ type: MESSAGE_TYPES.RECORDING_COMPLETE });
 }
 
 function startProgressTracking(totalDuration) {
@@ -431,23 +667,19 @@ function startProgressTracking(totalDuration) {
       progress = Math.min(95, Math.round((elapsed / RECORDING_CONFIG.DEFAULT_DURATION_MS) * 100));
     }
     
-    chrome.runtime.sendMessage({
-      type: MESSAGE_TYPES.RECORDING_PROGRESS,
-      queueItemId: currentQueueItemId,
-      progress
-    });
-    
-    notifyContentScript({
+    safeSend({
       type: MESSAGE_TYPES.RECORDING_PROGRESS,
       queueItemId: currentQueueItemId,
       progress,
       elapsed,
-      totalDuration
+      totalDuration,
+      label: 'Recording…'
     });
   }, RECORDING_CONFIG.PROGRESS_INTERVAL_MS);
 }
 
 function monitorSongEnd(totalDuration) {
+  const startSrc = currentAudioElement ? (currentAudioElement.currentSrc || currentAudioElement.src) : '';
   const checkInterval = setInterval(() => {
     if (!currentQueueItemId || !currentAudioElement) {
       clearInterval(checkInterval);
@@ -457,6 +689,15 @@ function monitorSongEnd(totalDuration) {
     const audio = currentAudioElement;
     const elapsed = Date.now() - recordingStartTime;
     
+    // Suno autoplays the next track on the same element: stop if the source changed
+    const nowSrc = audio.currentSrc || audio.src;
+    if (startSrc && nowSrc && nowSrc !== startSrc) {
+      log('Track changed, stopping recording');
+      clearInterval(checkInterval);
+      stopRecording();
+      return;
+    }
+
     // Stop if audio ended
     if (audio.ended) {
       log('Audio ended naturally, stopping recording');
@@ -481,13 +722,6 @@ function monitorSongEnd(totalDuration) {
       return;
     }
   }, 1000);
-}
-
-function notifyContentScript(message) {
-  chrome.runtime.sendMessage({
-    type: MESSAGE_TYPES.OPEN_POPUP, // Just to keep channel alive
-    ...message
-  }).catch(() => {});
 }
 
 // ============ MESSAGE HANDLER ============
@@ -515,6 +749,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             } : null
           });
           break;
+
+        case MESSAGE_TYPES.GET_AUDIO_URL: {
+          const el = findAudioElement();
+          let src = el ? (el.currentSrc || el.src || '') : '';
+          // Suno often sets the source via a blob: or MediaSource. If there is
+          // no direct file URL, look for a recent cdn.suno.com audio request.
+          if (!src || src.startsWith('blob:')) {
+            src = findRecentAudioUrl();
+          }
+          sendResponse({ audioUrl: src, metadata: extractSongMetadata() });
+          break;
+        }
           
         case MESSAGE_TYPES.START_RECORDING:
           log('Received START_RECORDING:', message.queueItemId);
@@ -552,6 +798,105 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+// ============ QUICK DOWNLOAD BUTTON (near player) ============
+// A single compact icon that sits above the playbar. One click fetches the
+// currently playing Suno audio and downloads it - no popup, no panel needed.
+let quickBtn = null;
+let quickBusy = false;
+
+function createQuickDownloadButton() {
+  if (quickBtn) return quickBtn;
+
+  quickBtn = document.createElement('button');
+  quickBtn.id = 'suno-quick-download';
+  quickBtn.type = 'button';
+  quickBtn.title = 'Download this song (Suno Advanced)';
+  quickBtn.setAttribute('aria-label', 'Download this song');
+  quickBtn.style.cssText = `
+    position: fixed;
+    right: 24px;
+    bottom: 104px;
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    border: 1px solid #3a3b3f;
+    background: #18191b;
+    color: #e8b04b;
+    cursor: pointer;
+    z-index: 2147483647;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+    transition: transform 0.15s, border-color 0.15s, background 0.15s;
+  `;
+  quickBtn.innerHTML = `
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3v12"></path>
+      <path d="m7 10 5 5 5-5"></path>
+      <path d="M5 21h14"></path>
+    </svg>
+  `;
+  quickBtn.addEventListener('mouseenter', () => {
+    quickBtn.style.transform = 'scale(1.08)';
+    quickBtn.style.borderColor = '#e8b04b';
+  });
+  quickBtn.addEventListener('mouseleave', () => {
+    quickBtn.style.transform = 'scale(1)';
+    quickBtn.style.borderColor = '#3a3b3f';
+  });
+  quickBtn.addEventListener('click', () => quickDownload());
+
+  (document.body || document.documentElement).appendChild(quickBtn);
+  return quickBtn;
+}
+
+function setQuickState(state) {
+  if (!quickBtn) return;
+  const svg = quickBtn.querySelector('svg');
+  if (state === 'busy') {
+    quickBusy = true;
+    quickBtn.style.color = '#e05252';
+    quickBtn.style.opacity = '0.85';
+    quickBtn.title = 'Downloading...';
+    if (svg) svg.style.animation = 'suno-spin 1s linear infinite';
+  } else if (state === 'done') {
+    quickBusy = false;
+    quickBtn.style.color = '#6fbf8f';
+    quickBtn.style.opacity = '1';
+    quickBtn.title = 'Download complete';
+    if (svg) svg.style.animation = 'none';
+    setTimeout(() => setQuickState('idle'), 2000);
+  } else if (state === 'error') {
+    quickBusy = false;
+    quickBtn.style.color = '#e05252';
+    quickBtn.style.opacity = '1';
+    quickBtn.title = 'Download failed - click to retry';
+    if (svg) svg.style.animation = 'none';
+    setTimeout(() => setQuickState('idle'), 2500);
+  } else {
+    quickBusy = false;
+    quickBtn.style.color = '#e8b04b';
+    quickBtn.style.opacity = '1';
+    quickBtn.title = 'Download this song (Suno Advanced)';
+    if (svg) svg.style.animation = 'none';
+  }
+}
+
+function quickDownload() {
+  if (quickBusy) return;
+  setQuickState('busy');
+  safeSend({ type: MESSAGE_TYPES.DIRECT_DOWNLOAD }, (response) => {
+    void chrome.runtime.lastError;
+    if (!response || response.error) {
+      log('Quick download error:', response.error);
+      setQuickState('error');
+    }
+    // Success/progress is driven by the progress messages below.
+  });
+}
+
 // ============ FLOATING PANEL ============
 function createPanel() {
   if (panel) return panel;
@@ -563,32 +908,32 @@ function createPanel() {
     bottom: 90px;
     right: 20px;
     width: 320px;
-    background: #1a1a2e;
-    border: 1px solid #333;
-    border-radius: 12px;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    background: #111213;
+    border: 1px solid #2a2b2e;
+    border-radius: 6px;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.5);
     z-index: 2147483647;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    color: #fff;
+    color: #ededed;
     overflow: hidden;
   `;
   
   panel.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #333;background:linear-gradient(90deg,#6366f1,#8b5cf6);">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #2a2b2e;background:#18191b;">
       <div style="display:flex;align-items:center;gap:8px;">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#e8b04b" stroke-width="2">
           <path d="M9 18V5l12-2v13"></path>
           <circle cx="6" cy="18" r="3"></circle>
           <circle cx="18" cy="16" r="3"></circle>
         </svg>
-        <span style="font-weight:600;font-size:14px;">Suno Advanced</span>
+        <span style="font-weight:600;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;">Suno Advanced</span>
       </div>
       <button id="suno-panel-close" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;padding:4px;opacity:0.7;transition:opacity 0.2s;">×</button>
     </div>
     <div id="suno-panel-content" style="padding:16px;">
       <div id="suno-panel-idle" style="display:none;text-align:center;color:#888;">
         <p style="margin:0 0 12px;">Play a song on Suno to see details</p>
-        <button id="suno-btn-add-current" style="background:#6366f1;color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:500;">+ Add Current Song</button>
+        <button id="suno-btn-add-current" style="background:#e8b04b;color:#141414;border:none;padding:10px 16px;border-radius:4px;cursor:pointer;font-weight:500;">+ Add Current Song</button>
       </div>
       <div id="suno-panel-playing" style="display:none;">
         <div style="display:flex;gap:12px;margin-bottom:12px;">
@@ -601,12 +946,12 @@ function createPanel() {
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
           <span id="suno-current-time" style="font-size:12px;color:#888;font-variant-numeric:tabular-nums;">0:00</span>
           <div style="flex:1;height:4px;background:#333;border-radius:2px;overflow:hidden;">
-            <div id="suno-progress-bar" style="width:0%;height:100%;background:linear-gradient(90deg,#6366f1,#8b5cf6);border-radius:2px;transition:width 0.5s;"></div>
+            <div id="suno-progress-bar" style="width:0%;height:100%;background:#e8b04b;border-radius:2px;transition:width 0.5s;"></div>
           </div>
           <span id="suno-duration" style="font-size:12px;color:#888;font-variant-numeric:tabular-nums;">0:00</span>
         </div>
         <div style="display:flex;gap:8px;">
-          <button id="suno-btn-record" style="flex:1;background:#dc2626;color:#fff;border:none;padding:10px;border-radius:8px;cursor:pointer;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">
+          <button id="suno-btn-record" style="flex:1;background:#e05252;color:#fff;border:none;padding:10px;border-radius:4px;cursor:pointer;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="#dc2626"><circle cx="12" cy="12" r="8"/></svg>
             <span>Start Recording</span>
           </button>
@@ -623,10 +968,10 @@ function createPanel() {
           <div id="suno-rec-time" style="font-size:14px;font-variant-numeric:tabular-nums;color:#dc2626;font-weight:600;">0:00</div>
         </div>
         <div style="height:6px;background:#333;border-radius:3px;overflow:hidden;margin-bottom:8px;">
-          <div id="suno-rec-progress" style="width:0%;height:100%;background:linear-gradient(90deg,#dc2626,#ef4444);border-radius:3px;transition:width 0.5s;"></div>
+          <div id="suno-rec-progress" style="width:0%;height:100%;background:#e05252;border-radius:3px;transition:width 0.5s;"></div>
         </div>
         <div style="display:flex;gap:8px;">
-          <button id="suno-btn-stop-rec" style="flex:1;background:#dc2626;color:#fff;border:none;padding:10px;border-radius:8px;cursor:pointer;font-weight:600;">Stop Recording</button>
+          <button id="suno-btn-stop-rec" style="flex:1;background:#e05252;color:#fff;border:none;padding:10px;border-radius:4px;cursor:pointer;font-weight:600;">Stop Recording</button>
         </div>
       </div>
       <div id="suno-panel-progress" style="display:none;">
@@ -793,10 +1138,11 @@ async function addCurrentSongToQueue(startRecordingNow = false) {
     coverUrl: metadata.coverUrl
   };
   
-  chrome.runtime.sendMessage({
+  safeSend({
     type: MESSAGE_TYPES.ADD_TO_QUEUE,
     item: queueItem
   }, (response) => {
+    void chrome.runtime.lastError;
     if (response?.item) {
       if (startRecordingNow) {
         // The background will handle starting recording
@@ -808,42 +1154,32 @@ async function addCurrentSongToQueue(startRecordingNow = false) {
 
 // ============ CONTENT SCRIPT READY SIGNAL ============
 function announceReady() {
-  chrome.runtime.sendMessage({ type: MESSAGE_TYPES.CONTENT_SCRIPT_READY }).catch(() => {});
+  safeSend({ type: MESSAGE_TYPES.CONTENT_SCRIPT_READY });
 }
 
 // ============ INITIALIZATION ============
 function init() {
   log('Content script loaded');
   
-  // Create panel
-  createPanel();
-  
+  // Create the one-click download icon near the player
+  createQuickDownloadButton();
+
+  // Spin animation for the busy state
+  const spinStyle = document.createElement('style');
+  spinStyle.textContent = '@keyframes suno-spin { to { transform: rotate(360deg); } }';
+  document.head.appendChild(spinStyle);
+
   // Announce ready
   announceReady();
   
-  // Update UI periodically
-  setInterval(updatePanelUI, 2000);
-  
-  // Listen for progress messages from background
+  // Listen for progress messages from background (drives the quick icon)
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === MESSAGE_TYPES.ENCODING_PROGRESS) {
-      showProgressUI(`Converting to MP3...`, message.progress, '#f59e0b');
-    } else if (message.type === MESSAGE_TYPES.DOWNLOAD_PROGRESS) {
-      showProgressUI(`Downloading...`, message.progress, '#22c55e');
-    } else if (message.type === MESSAGE_TYPES.DOWNLOAD_COMPLETE) {
-      showProgressUI(`Download Complete!`, 100, '#22c55e');
-      setTimeout(() => updatePanelUI(), 3000);
-    } else if (message.type === MESSAGE_TYPES.RECORDING_STARTED) {
-      isRecording = true;
-      updatePanelUI();
-    } else if (message.type === MESSAGE_TYPES.RECORDING_COMPLETE) {
-      isRecording = false;
-      // UI will be updated by progress messages
+    if (message.type === MESSAGE_TYPES.DOWNLOAD_COMPLETE) {
+      setQuickState('done');
+    } else if (message.type === MESSAGE_TYPES.RECORDING_ERROR) {
+      setQuickState('error');
     }
   });
-  
-  // Initial UI update
-  updatePanelUI();
   
   log('Initialization complete');
 }

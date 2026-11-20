@@ -37,7 +37,7 @@ export async function getHistory() {
 export async function saveHistory(history) {
   const settings = await getSettings();
   const maxItems = settings.maxHistoryItems || 100;
-  const trimmed = history.slice(-maxItems);
+  const trimmed = history.slice(0, maxItems); // newest first
   return setInStorage(STORAGE_KEYS.HISTORY, trimmed);
 }
 

@@ -53,6 +53,7 @@ export const MESSAGE_TYPES = {
   // Recording
   START_RECORDING: 'START_RECORDING',
   STOP_RECORDING: 'STOP_RECORDING',
+  DIRECT_DOWNLOAD: 'DIRECT_DOWNLOAD',
   RECORDING_STARTED: 'RECORDING_STARTED',
   RECORDING_PROGRESS: 'RECORDING_PROGRESS',
   RECORDING_COMPLETE: 'RECORDING_COMPLETE',
@@ -68,16 +69,29 @@ export const MESSAGE_TYPES = {
   GET_METADATA: 'GET_METADATA',
   GET_PLAY_STATE: 'GET_PLAY_STATE',
   GET_PLAYBACK_INFO: 'GET_PLAYBACK_INFO',
+  GET_AUDIO_URL: 'GET_AUDIO_URL',
   
   // UI
   OPEN_POPUP: 'OPEN_POPUP',
+  OPEN_OFFSCREEN: 'OPEN_OFFSCREEN',
+  OPEN_OPTIONS: 'OPEN_OPTIONS',
   CONTENT_SCRIPT_READY: 'CONTENT_SCRIPT_READY',
   PING: 'PING',
+
+  // Extension-wide lifecycle events (delivered to side panel + popup)
+  DOWNLOAD_STARTED: 'DOWNLOAD_STARTED',
+  FETCH_PROGRESS: 'FETCH_PROGRESS',
+  PIPELINE_STAGE: 'PIPELINE_STAGE',
+  ACTIVITY: 'ACTIVITY',
   
   // Offscreen
   MP3_PROGRESS: 'MP3_PROGRESS',
   MP3_READY: 'MP3_READY',
-  MP3_ERROR: 'MP3_ERROR'
+  MP3_ERROR: 'MP3_ERROR',
+  CREATE_BLOB_URL: 'CREATE_BLOB_URL',
+  REVOKE_BLOB_URL: 'REVOKE_BLOB_URL',
+  FETCH_AUDIO: 'FETCH_AUDIO',
+  FETCH_AUDIO_PROGRESS: 'FETCH_AUDIO_PROGRESS'
 };
 
 export const SUNO_URL_PATTERNS = [
@@ -87,7 +101,6 @@ export const SUNO_URL_PATTERNS = [
 
 export const PLAYBAR_SELECTORS = [
   '[data-playbar="true"]',
-  '[data-[playbar]]:not([data-[playbar]=""])',
   '[data-testid="player-bar"]',
   '[data-testid="playback-bar"]',
   'div[class*="playbar"]',
@@ -99,10 +112,12 @@ export const PLAYBAR_SELECTORS = [
 ];
 
 export const AUDIO_SELECTORS = [
+  'audio#active-audio-play',
   'audio[data-testid="audio-player"]',
+  'audio[id*="audio-play"]:not(#silent-audio)',
   'audio[class*="player"]',
   'audio[controls]',
-  'audio',
+  'audio:not(#silent-audio)',
   'video'
 ];
 
@@ -160,16 +175,73 @@ export function formatFileSize(bytes) {
 }
 
 export function sanitizeFileName(name) {
-  return name
+  const clean = String(name || '')
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
     .trim()
-    .substring(0, 200);
+    .replace(/^\.+/, '')
+    .substring(0, 150)
+    .replace(/[. ]+$/, '');
+  return clean || 'suno-track';
 }
 
 export function generateId() {
-  return Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 11);
 }
 
 export function isSunoUrl(url) {
-  return url?.includes('suno.com') ?? false;
+  try {
+    const host = new URL(url).hostname;
+    return host === 'suno.com' || host.endsWith('.suno.com');
+  } catch (e) {
+    return false;
+  }
+}
+
+// ---- Binary <-> string helpers -------------------------------------------
+// chrome.runtime.sendMessage serialises with JSON by default, so ArrayBuffers
+// arrive as `{}`. Audio is therefore sent between extension contexts as base64.
+export function bufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+export function base64ToBuffer(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+export async function blobToBase64(blob) {
+  return bufferToBase64(await blob.arrayBuffer());
+}
+
+// Sub-folder for chrome.downloads: no "..", no drive letters, no invalid chars.
+export function sanitizeFolder(folder) {
+  const parts = String(folder || '')
+    .split(/[\\/]+/)
+    .map((p) => p.replace(/[<>:"|?*\x00-\x1F]/g, '_').replace(/^\.+|\.+$/g, '').trim())
+    .filter(Boolean);
+  return parts.join('/');
+}
+
+export function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[c]);
+}
+
+// Only allow http(s) image URLs into <img src> (scraped from the page).
+export function safeImageUrl(url) {
+  try {
+    const u = new URL(url);
+    return (u.protocol === 'https:' || u.protocol === 'http:') ? u.href : '';
+  } catch (e) {
+    return '';
+  }
 }

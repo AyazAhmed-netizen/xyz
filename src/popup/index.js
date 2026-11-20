@@ -7,7 +7,9 @@ import {
   ACTIVE_STATUSES,
   formatTime,
   formatRelativeTime,
-  formatFileSize
+  formatFileSize,
+  escapeHtml,
+  safeImageUrl
 } from '../shared/constants.js';
 
 // ============ STATE ============
@@ -71,7 +73,7 @@ function showToast(message, type = 'info') {
     info: '<svg class="toast-icon" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>'
   };
   
-  toast.innerHTML = `${icons[type]}<span class="toast-message">${message}</span><button class="toast-close" aria-label="Close"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>`;
+  toast.innerHTML = `${icons[type]}<span class="toast-message">${escapeHtml(message)}</span><button class="toast-close" aria-label="Close"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>`;
   
   toast.querySelector('.toast-close').addEventListener('click', () => {
     toast.style.animation = 'slideIn 0.3s ease reverse';
@@ -172,10 +174,10 @@ function renderCurrentSong() {
   elements.currentSongContent.innerHTML = `
     <div class="song-card ${isPlaying ? 'playing' : ''}">
       <div class="song-header">
-        ${metadata.coverUrl ? `<img class="song-cover" src="${metadata.coverUrl}" alt="">` : ''}
+        ${metadata.coverUrl ? `<img class="song-cover" src="${escapeHtml(safeImageUrl(metadata.coverUrl))}" alt="">` : ''}
         <div class="song-info">
-          <div class="song-title">${metadata.songName}</div>
-          <div class="song-artist">${metadata.artist}</div>
+          <div class="song-title">${escapeHtml(metadata.songName)}</div>
+          <div class="song-artist">${escapeHtml(metadata.artist)}</div>
           <div class="song-meta">
             <span>${formatTime(metadata.duration || playState?.duration || 0)}</span>
             ${playState?.currentTime ? `<span>${formatTime(playState.currentTime)} / ${formatTime(playState.duration)}</span>` : ''}
@@ -270,11 +272,11 @@ function renderQueue() {
     }
     
     return `
-      <div class="queue-item ${item.status}" data-id="${item.id}">
-        ${item.coverUrl ? `<img class="queue-cover" src="${item.coverUrl}" alt="">` : ''}
+      <div class="queue-item ${item.status}" data-id="${escapeHtml(item.id)}">
+        ${item.coverUrl ? `<img class="queue-cover" src="${escapeHtml(safeImageUrl(item.coverUrl))}" alt="">` : ''}
         <div class="queue-info">
-          <div class="queue-title">${item.songName}</div>
-          <div class="queue-artist">${item.artist}</div>
+          <div class="queue-title">${escapeHtml(item.songName)}</div>
+          <div class="queue-artist">${escapeHtml(item.artist)}</div>
           <div class="queue-meta">
             <span>${formatTime(item.duration)}</span>
             <span>${formatRelativeTime(item.addedAt)}</span>
@@ -282,7 +284,7 @@ function renderQueue() {
           </div>
           ${isActive ? `
             <div class="queue-progress">
-              <div class="queue-progress-fill ${statusClass}" style="width: ${item.progress}%"></div>
+              <div class="queue-progress-fill ${statusClass}" style="width: ${Number(item.progress) || 0}%"></div>
             </div>
           ` : ''}
         </div>
@@ -338,11 +340,11 @@ function renderHistory() {
   }
   
   elements.historyList.innerHTML = history.map(item => `
-    <div class="history-item" data-id="${item.id}">
-      ${item.coverUrl ? `<img class="history-cover" src="${item.coverUrl}" alt="">` : ''}
+    <div class="history-item" data-id="${escapeHtml(item.id)}">
+      ${item.coverUrl ? `<img class="history-cover" src="${escapeHtml(safeImageUrl(item.coverUrl))}" alt="">` : ''}
       <div class="history-info">
-        <div class="history-title">${item.songName}</div>
-        <div class="history-artist">${item.artist}</div>
+        <div class="history-title">${escapeHtml(item.songName)}</div>
+        <div class="history-artist">${escapeHtml(item.artist)}</div>
         <div class="history-meta">
           <span>${formatTime(item.duration)}</span>
           <span>${formatRelativeTime(item.downloadedAt)}</span>
