@@ -1,0 +1,14 @@
+{
+  "name": "suno-advanced-downloader",
+  "version": "2.3.0",
+  "type": "module",
+  "description": "Smart Suno.com song downloader with MP3 conversion, side panel and real-time progress",
+  "scripts": {
+    "build": "esbuild src/content/index.js --bundle --format=iife --target=chrome110 --outfile=src/content/bundle.js",
+    "build:watch": "esbuild src/content/index.js --bundle --format=iife --target=chrome110 --outfile=src/content/bundle.js --watch",
+    "check": "esbuild src/content/index.js --bundle --format=iife --target=chrome110 --outfile=src/content/bundle.js && node --check src/background/index.js && node --check src/popup/index.js && node --check src/offscreen/index.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

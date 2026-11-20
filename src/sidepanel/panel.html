@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Suno Advanced — Console</title>
+<style>
+  :root {
+    --bg: #0e0f10;
+    --surface: #161719;
+    --surface-2: #1d1e21;
+    --surface-3: #242529;
+    --line: #28292d;
+    --line-2: #383a3f;
+    --text: #ececee;
+    --muted: #92939a;
+    --faint: #62636a;
+    --signal: #e8b04b;
+    --signal-soft: rgba(232, 176, 75, 0.12);
+    --rec: #e05252;
+    --ok: #6fbf8f;
+    --warn: #d9a441;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ===== Header ===== */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
+  }
+  .logo-mark {
+    width: 28px; height: 28px;
+    border: 1px solid var(--line-2);
+    border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--signal);
+    background: var(--surface-2);
+  }
+  .logo-mark svg { width: 16px; height: 16px; }
+  .brand { flex: 1; }
+  .brand h1 {
+    font-size: 12px; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .brand .sub {
+    font-family: var(--mono); font-size: 10px;
+    color: var(--faint); letter-spacing: 0.04em;
+    margin-top: 2px;
+  }
+  .conn {
+    display: flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 10px;
+    color: var(--muted);
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(111,191,143,0.12); }
+  .dot.busy { background: var(--signal); animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0.3; } }
+
+  /* ===== Tabs ===== */
+  .tabs {
+    display: flex;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
+  }
+  .tab {
+    flex: 1; padding: 11px 4px;
+    border: none; border-bottom: 2px solid transparent;
+    background: transparent; color: var(--faint);
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    cursor: pointer;
+  }
+  .tab:hover { color: var(--muted); }
+  .tab.active { color: var(--text); border-bottom-color: var(--signal); }
+  .tab .cnt {
+    font-family: var(--mono); font-size: 9px;
+    color: var(--signal); margin-left: 3px;
+  }
+
+  .view { display: none; flex: 1; overflow-y: auto; padding: 14px; }
+  .view.active { display: block; }
+  .view::-webkit-scrollbar { width: 8px; }
+  .view::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 4px; }
+
+  /* ===== Pipeline card ===== */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+  .card-title {
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 12px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card-title .state {
+    font-family: var(--mono); font-size: 9px;
+    color: var(--faint); letter-spacing: 0.05em;
+  }
+
+  /* Now playing */
+  .np { display: flex; gap: 12px; align-items: center; }
+  .np-cover {
+    width: 54px; height: 54px; border-radius: 6px;
+    background: var(--surface-3); object-fit: cover;
+    border: 1px solid var(--line); flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--faint);
+  }
+  .np-cover svg { width: 22px; height: 22px; }
+  .np-meta { flex: 1; min-width: 0; }
+  .np-title {
+    font-weight: 600; font-size: 13px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .np-title.placeholder { color: var(--faint); font-weight: 400; }
+  .np-artist { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .np-time { font-family: var(--mono); font-size: 10px; color: var(--faint); margin-top: 5px; }
+
+  /* Detect button */
+  .btn {
+    border: 1px solid var(--line-2);
+    background: var(--surface-2);
+    color: var(--text);
+    padding: 10px 14px;
+    border-radius: 5px;
+    font-size: 12px; font-weight: 600;
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    transition: border-color 0.15s, background 0.15s, transform 0.1s;
+  }
+  .btn:hover { border-color: var(--signal); background: var(--surface-3); }
+  .btn:active { transform: scale(0.98); }
+  .btn svg { width: 15px; height: 15px; }
+  .btn-primary {
+    background: var(--signal); color: #14130f;
+    border-color: var(--signal);
+  }
+  .btn-primary:hover { background: #f0bd58; border-color: #f0bd58; }
+  .btn-danger { color: var(--rec); border-color: rgba(224,82,82,0.4); }
+  .btn-block { width: 100%; margin-top: 12px; }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* Pipeline stages */
+  .pipeline { display: flex; flex-direction: column; gap: 2px; }
+  .stage { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+  .stage-icon {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1px solid var(--line-2);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 10px;
+    color: var(--faint); flex-shrink: 0;
+    background: var(--surface-2);
+  }
+  .stage-icon.active { border-color: var(--signal); color: var(--signal); }
+  .stage-icon.done { border-color: var(--ok); color: var(--ok); }
+  .stage-icon.error { border-color: var(--rec); color: var(--rec); }
+  .stage-body { flex: 1; min-width: 0; }
+  .stage-top { display: flex; justify-content: space-between; align-items: baseline; }
+  .stage-name { font-size: 11px; font-weight: 600; color: var(--muted); }
+  .stage.active .stage-name { color: var(--text); }
+  .stage-label {
+    font-family: var(--mono); font-size: 9px; color: var(--faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 60%; text-align: right;
+  }
+  .stage-track {
+    height: 3px; background: var(--surface-3);
+    border-radius: 2px; margin-top: 6px; overflow: hidden;
+  }
+  .stage-fill {
+    height: 100%; width: 0%; background: var(--signal);
+    border-radius: 2px; transition: width 0.35s ease;
+  }
+  .stage.done .stage-fill { background: var(--ok); }
+  .stage.error .stage-fill { background: var(--rec); }
+
+  /* Overall progress */
+  .overall { margin-top: 10px; }
+  .overall-top {
+    display: flex; justify-content: space-between;
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .overall-track {
+    height: 6px; background: var(--surface-3);
+    border-radius: 3px; overflow: hidden;
+  }
+  .overall-fill {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, var(--signal), #f0c46a);
+    border-radius: 3px; transition: width 0.35s ease;
+  }
+
+  /* Loader overlay */
+  .loader {
+    display: none; align-items: center; gap: 10px;
+    padding: 10px 12px; margin-bottom: 12px;
+    background: var(--signal-soft);
+    border: 1px solid rgba(232,176,75,0.3);
+    border-radius: 6px;
+  }
+  .loader.show { display: flex; }
+  .spinner {
+    width: 18px; height: 18px;
+    border: 2px solid var(--line-2);
+    border-top-color: var(--signal);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loader-text { font-size: 11px; color: var(--signal); }
+  .loader-text .mono { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+  /* Activity log */
+  .log { display: flex; flex-direction: column; gap: 6px; }
+  .log-row {
+    display: flex; gap: 8px; align-items: flex-start;
+    font-family: var(--mono); font-size: 10px;
+    color: var(--muted); line-height: 1.4;
+  }
+  .log-time { color: var(--faint); flex-shrink: 0; }
+  .log-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); margin-top: 4px; flex-shrink: 0; }
+  .log-row.ok .log-dot { background: var(--ok); }
+  .log-row.warn .log-dot { background: var(--warn); }
+  .log-row.error .log-dot { background: var(--rec); }
+  .log-msg { flex: 1; word-break: break-word; }
+  .log-empty { text-align: center; color: var(--faint); font-size: 11px; padding: 14px 0; }
+
+  /* List items (queue / history) */
+  .list { display: flex; flex-direction: column; gap: 8px; }
+  .item {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 6px; padding: 11px 12px;
+  }
+  .item-top { display: flex; gap: 10px; align-items: center; }
+  .item-name { flex: 1; font-size: 12px; font-weight: 600; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item-sub { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .status-tag {
+    font-family: var(--mono); font-size: 9px; text-transform: uppercase;
+    letter-spacing: 0.05em; padding: 3px 6px; border-radius: 3px;
+    border: 1px solid var(--line-2); color: var(--muted);
+  }
+  .status-tag.recording { color: var(--rec); border-color: rgba(224,82,82,0.4); }
+  .status-tag.encoding, .status-tag.downloading, .status-tag.pending { color: var(--signal); border-color: rgba(232,176,75,0.4); }
+  .status-tag.completed { color: var(--ok); border-color: rgba(111,191,143,0.4); }
+  .status-tag.failed { color: var(--rec); border-color: rgba(224,82,82,0.4); }
+  .item-actions { display: flex; gap: 6px; margin-top: 10px; }
+  .mini-btn {
+    border: 1px solid var(--line); background: var(--surface-2);
+    color: var(--muted); border-radius: 4px;
+    padding: 5px 9px; font-size: 10px; cursor: pointer;
+  }
+  .mini-btn:hover { color: var(--text); border-color: var(--line-2); }
+  .mini-btn.del:hover { color: var(--rec); border-color: rgba(224,82,82,0.4); }
+  .empty {
+    text-align: center; padding: 40px 16px; color: var(--faint);
+  }
+  .empty svg { width: 34px; height: 34px; opacity: 0.5; margin-bottom: 10px; }
+  .empty p { font-size: 12px; }
+
+  /* Settings */
+  .setting {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 0; border-bottom: 1px solid var(--line);
+  }
+  .setting:last-child { border-bottom: none; }
+  .setting-label { font-size: 12px; font-weight: 500; }
+  .setting-desc { font-size: 10px; color: var(--faint); margin-top: 3px; }
+  .toggle {
+    width: 38px; height: 21px; border-radius: 11px;
+    background: var(--surface-3); border: 1px solid var(--line-2);
+    position: relative; cursor: pointer; flex-shrink: 0;
+    transition: background 0.2s;
+  }
+  .toggle::after {
+    content: ''; position: absolute;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: var(--muted); top: 2px; left: 2px;
+    transition: transform 0.2s, background 0.2s;
+  }
+  .toggle.on { background: var(--signal-soft); border-color: var(--signal); }
+  .toggle.on::after { transform: translateX(17px); background: var(--signal); }
+  .select {
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--line-2); border-radius: 4px;
+    padding: 6px 8px; font-size: 11px; font-family: var(--mono);
+  }
+  .text-input {
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--line-2); border-radius: 4px;
+    padding: 7px 9px; font-size: 11px; width: 170px;
+  }
+
+  /* Toast */
+  #toast {
+    position: fixed; bottom: 16px; left: 16px; right: 16px;
+    padding: 11px 13px; border-radius: 6px;
+    background: var(--surface-3); border: 1px solid var(--line-2);
+    font-size: 11px; color: var(--text);
+    transform: translateY(80px); opacity: 0;
+    transition: transform 0.25s, opacity 0.25s;
+    z-index: 50; display: flex; align-items: center; gap: 9px;
+  }
+  #toast.show { transform: translateY(0); opacity: 1; }
+  #toast .t-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--signal); flex-shrink: 0; }
+  #toast.ok .t-dot { background: var(--ok); }
+  #toast.error .t-dot { background: var(--rec); }
+
+  .section-label {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--faint);
+    margin: 4px 0 10px;
+  }
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .link-btn {
+    background: none; border: none; color: var(--signal);
+    font-size: 10px; cursor: pointer; font-family: var(--mono);
+  }
+  .link-btn:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <div class="logo-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path>
+      </svg>
+    </div>
+    <div class="brand">
+      <h1>Suno Advanced</h1>
+      <div class="sub">DOWNLOAD CONSOLE · v2.1</div>
+    </div>
+    <div class="conn"><span class="dot on" id="conn-dot"></span><span id="conn-text">READY</span></div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-view="console">Console</button>
+    <button class="tab" data-view="queue">Queue <span class="cnt" id="queue-cnt">0</span></button>
+    <button class="tab" data-view="history">History</button>
+    <button class="tab" data-view="settings">Settings</button>
+  </div>
+
+  <!-- ===== CONSOLE VIEW ===== -->
+  <div class="view active" id="view-console">
+    <div class="loader" id="loader">
+      <div class="spinner"></div>
+      <div class="loader-text"><span id="loader-label">Processing</span> <span class="mono" id="loader-pct">0%</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span>Now Playing</span><span class="state" id="page-state">—</span></div>
+      <div class="np">
+        <div class="np-cover" id="np-cover">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+        </div>
+        <div class="np-meta">
+          <div class="np-title placeholder" id="np-title">No song found</div>
+          <div class="np-artist" id="np-artist">Play a track on Suno</div>
+          <div class="np-time" id="np-time">0:00 / 0:00</div>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-block" id="btn-detect">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><path d="m21 21-4-4"></path></svg>
+        <span>Detect Current Song</span>
+      </button>
+      <button class="btn btn-primary btn-block" id="btn-download">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg>
+        <span>Start Download (automatic)</span>
+      </button>
+      <div id="result-row" style="display:none;gap:8px;margin-top:10px">
+        <button class="btn btn-primary" id="btn-play" style="flex:1"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"></path></svg><span>Play</span></button>
+        <button class="btn" id="btn-folder" style="flex:1"><span>Show in folder</span></button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span>Pipeline</span><span class="state" id="pipeline-state">IDLE</span></div>
+      <div class="pipeline" id="pipeline">
+        <div class="stage" data-stage="detect">
+          <div class="stage-icon">1</div>
+          <div class="stage-body">
+            <div class="stage-top"><span class="stage-name">Detect</span><span class="stage-label">—</span></div>
+            <div class="stage-track"><div class="stage-fill"></div></div>
+          </div>
+        </div>
+        <div class="stage" data-stage="record">
+          <div class="stage-icon">2</div>
+          <div class="stage-body">
+            <div class="stage-top"><span class="stage-name">Record</span><span class="stage-label">—</span></div>
+            <div class="stage-track"><div class="stage-fill"></div></div>
+          </div>
+        </div>
+        <div class="stage" data-stage="encode">
+          <div class="stage-icon">3</div>
+          <div class="stage-body">
+            <div class="stage-top"><span class="stage-name">Encode MP3</span><span class="stage-label">—</span></div>
+            <div class="stage-track"><div class="stage-fill"></div></div>
+          </div>
+        </div>
+        <div class="stage" data-stage="download">
+          <div class="stage-icon">4</div>
+          <div class="stage-body">
+            <div class="stage-top"><span class="stage-name">Save</span><span class="stage-label">—</span></div>
+            <div class="stage-track"><div class="stage-fill"></div></div>
+          </div>
+        </div>
+        <div class="stage" data-stage="done">
+          <div class="stage-icon">5</div>
+          <div class="stage-body">
+            <div class="stage-top"><span class="stage-name">Complete</span><span class="stage-label">—</span></div>
+            <div class="stage-track"><div class="stage-fill"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="overall">
+        <div class="overall-top"><span>OVERALL</span><span id="overall-pct">0%</span></div>
+        <div class="overall-track"><div class="overall-fill" id="overall-fill"></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>Activity</span>
+        <button class="link-btn" id="btn-clear-log">clear</button>
+      </div>
+      <div class="log" id="log">
+        <div class="log-empty">No activity yet</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== QUEUE VIEW ===== -->
+  <div class="view" id="view-queue">
+    <div class="row-between section-label">
+      <span>Download Queue</span>
+      <button class="link-btn" id="btn-clear-queue">clear all</button>
+    </div>
+    <div class="list" id="queue-list"></div>
+  </div>
+
+  <!-- ===== HISTORY VIEW ===== -->
+  <div class="view" id="view-history">
+    <div class="row-between section-label">
+      <span>Download History</span>
+      <button class="link-btn" id="btn-clear-history">clear all</button>
+    </div>
+    <div class="list" id="history-list"></div>
+  </div>
+
+  <!-- ===== SETTINGS VIEW ===== -->
+  <div class="view" id="view-settings">
+    <div class="section-label">Preferences</div>
+    <div class="setting">
+      <div>
+        <div class="setting-label">Auto MP3 convert</div>
+        <div class="setting-desc">Download ke baad MP3 me badlein</div>
+      </div>
+      <div class="toggle" id="set-mp3"></div>
+    </div>
+    <div class="setting">
+      <div>
+        <div class="setting-label">Notifications</div>
+        <div class="setting-desc">Progress aur complete alerts</div>
+      </div>
+      <div class="toggle" id="set-notify"></div>
+    </div>
+    <div class="setting">
+      <div>
+        <div class="setting-label">Keep history</div>
+        <div class="setting-desc">Downloaded tracks ki list rakhein</div>
+      </div>
+      <div class="toggle" id="set-history"></div>
+    </div>
+    <div class="setting">
+      <div>
+        <div class="setting-label">Audio quality</div>
+        <div class="setting-desc">MP3 bitrate (kbps)</div>
+      </div>
+      <select class="select" id="set-quality">
+        <option value="128">128</option>
+        <option value="192">192</option>
+        <option value="320">320</option>
+      </select>
+    </div>
+    <div class="setting">
+      <div>
+        <div class="setting-label">Download folder</div>
+        <div class="setting-desc">Relative folder name</div>
+      </div>
+      <input class="text-input" id="set-folder" type="text">
+    </div>
+  </div>
+</div>
+
+<div id="toast"><span class="t-dot"></span><span id="toast-msg"></span></div>
+
+<script type="module" src="./panel.js"></script>
+</body>
+</html>
