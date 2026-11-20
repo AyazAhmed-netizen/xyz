@@ -160,105 +160,152 @@ function extractSongMetadata() {
     duration: null,
     coverUrl: null
   };
-  
-  // SCOPE: Extract ONLY from the bottom player bar (playbar)
-  // Suno's playbar is a fixed bottom element with data-[playbar] attribute
-  const playerBar = 
+
+  // --- 1. Find the bottom player bar (playbar) ---
+  const playerBar =
     document.querySelector('[data-playbar="true"]') ||
     document.querySelector('[data-[playbar]]:not([data-[playbar]=""])') ||
-    document.querySelector('div.in-has-data-\\[playbar\\]') ||
-    document.querySelector('div[class*="in-has-data-\\[playbar\\]"]') ||
-    document.querySelector('footer[class*="fixed"][class*="bottom"]') ||
     document.querySelector('[data-testid="player-bar"]') ||
     document.querySelector('[data-testid="playback-bar"]') ||
     document.querySelector('div[class*="playbar"]') ||
     document.querySelector('div[class*="Playbar"]') ||
+    document.querySelector('footer[class*="fixed"][class*="bottom"]') ||
     document.querySelector('footer[class*="player"]') ||
+    document.querySelector('div[role="region"][aria-label*="player" i]') ||
+    document.querySelector('div[class*="player-bar"]') ||
     null;
 
   const scopes = playerBar ? [playerBar] : [];
 
-  // Debug log
   if (playerBar) {
     console.log('[Suno Downloader] Found playbar:', playerBar);
   } else {
-    console.warn('[Suno Downloader] Playbar NOT found, metadata will use fallbacks');
+    console.warn('[Suno Downloader] Playbar NOT found, using page-level fallbacks');
   }
 
-  // Track title: look for the song title in the player bar ONLY
-  for (const scope of scopes) {
-    if (metadata.songName) break;
-    const titleSelectors = [
-      '[data-testid="song-title"]',
-      '[data-testid="track-title"]',
-      '[data-testid="playback-title"]',
-      '[data-testid="song-title"] span',
-      '[data-testid="track-title"] span',
-      '[class*="SongTitle"]',
-      '[class*="TrackTitle"]',
-      '[class*="playback-title"]',
-      '[class*="song-title"]',
-      '[class*="title"]:not([class*="subtitle"]):not([class*="caption"])',
-      'h1', 'h2', 'h3', 'h4',
-      'span[class*="title"]',
-      'div[class*="title"]'
-    ];
-    for (const selector of titleSelectors) {
-      const el = scope.querySelector(selector);
-      const text = el?.textContent?.trim();
-      // Filter out generic words like "Explore", "Library", "Create", etc.
-      if (text && text.length > 1 && !['explore', 'library', 'create', 'suno', 'home', 'search', 'playlist', 'my library', 'liked songs'].includes(text.toLowerCase())) {
-        metadata.songName = text; 
-        console.log('[Suno Downloader] Found song name:', text, 'via selector:', selector);
-        break; 
+  // --- 2. Song title from player bar ---
+  if (!metadata.songName) {
+    for (const scope of scopes) {
+      if (metadata.songName) break;
+      const titleSelectors = [
+        '[data-testid="song-title"]',
+        '[data-testid="track-title"]',
+        '[data-testid="playback-title"]',
+        '[class*="SongTitle"]',
+        '[class*="TrackTitle"]',
+        '[class*="playback-title"]',
+        '[class*="song-title"]',
+        'h1', 'h2', 'h3', 'h4',
+        'span[class*="title"]',
+        'div[class*="title"]'
+      ];
+      for (const selector of titleSelectors) {
+        const el = scope.querySelector(selector);
+        const text = el?.textContent?.trim();
+        if (text && text.length > 1 &&
+          !['explore', 'library', 'create', 'suno', 'home', 'search', 'playlist', 'my library', 'liked songs', 'for you'].includes(text.toLowerCase())) {
+          metadata.songName = text;
+          console.log('[Suno Downloader] Found song name:', text, 'via selector:', selector);
+          break;
+        }
       }
     }
   }
 
-  // Track artist: only anchors to a profile page, searched inside the player scope first
-  for (const scope of scopes) {
-    if (metadata.artist) break;
-    const artistSelectors = [
-      '[data-testid="song-artist"]',
-      '[data-testid="track-artist"]',
-      '[data-testid="playback-artist"]',
-      '[data-testid="song-artist"] a',
-      '[data-testid="track-artist"] a',
-      '[class*="Artist"] a',
-      '[class*="artist"] a',
-      'a[href^="/@"]',
-      '[class*="artist"]',
-      '[class*="creator"]',
-      '[class*="author"]'
-    ];
-    for (const selector of artistSelectors) {
-      const el = scope.querySelector(selector);
-      const text = el?.textContent?.trim();
-      if (text && text.length > 1 && !['explore', 'library', 'create', 'suno', 'home', 'search', 'playlist'].includes(text.toLowerCase())) {
-        metadata.artist = text; 
-        console.log('[Suno Downloader] Found artist:', text, 'via selector:', selector);
-        break; 
+  // --- 3. Artist from player bar ---
+  if (!metadata.artist) {
+    for (const scope of scopes) {
+      if (metadata.artist) break;
+      const artistSelectors = [
+        '[data-testid="song-artist"]',
+        '[data-testid="track-artist"]',
+        '[data-testid="playback-artist"]',
+        '[class*="Artist"] a',
+        '[class*="artist"] a',
+        'a[href^="/@"]',
+        '[class*="artist"]',
+        '[class*="creator"]',
+        '[class*="author"]'
+      ];
+      for (const selector of artistSelectors) {
+        const el = scope.querySelector(selector);
+        const text = el?.textContent?.trim();
+        if (text && text.length > 1 &&
+          !['explore', 'library', 'create', 'suno', 'home', 'search', 'playlist'].includes(text.toLowerCase())) {
+          metadata.artist = text;
+          console.log('[Suno Downloader] Found artist:', text, 'via selector:', selector);
+          break;
+        }
       }
     }
   }
 
-  // Fallback for title: page <title> is "Song Name | Suno" on song pages
+  // --- 4. Open Graph / meta tag fallbacks (works on /explore too) ---
+  if (!metadata.songName) {
+    const ogTitle = document.querySelector('meta[property="og:title"]')?.content ||
+                    document.querySelector('meta[name="og:title"]')?.content;
+    if (ogTitle && ogTitle.length > 1 && !ogTitle.toLowerCase().includes('suno')) {
+      metadata.songName = ogTitle.replace(/\s*\|\s*Suno\s*$/i, '').trim();
+      console.log('[Suno Downloader] Found song name from og:title:', metadata.songName);
+    }
+  }
+  if (!metadata.songName) {
+    const twitterTitle = document.querySelector('meta[name="twitter:title"]')?.content;
+    if (twitterTitle && twitterTitle.length > 1) {
+      metadata.songName = twitterTitle.replace(/\s*\|\s*Suno\s*$/i, '').trim();
+      console.log('[Suno Downloader] Found song name from twitter:title:', metadata.songName);
+    }
+  }
   if (!metadata.songName) {
     const t = document.title || '';
     const m = t.match(/^(.+?)\s*[|·]\s*Suno/i);
-    if (m && m[1].trim() && !['explore', 'library', 'create', 'suno', 'home', 'search'].includes(m[1].trim().toLowerCase())) {
+    if (m && m[1].trim() &&
+      !['explore', 'library', 'create', 'suno', 'home', 'search', 'for you'].includes(m[1].trim().toLowerCase())) {
       metadata.songName = m[1].trim();
       console.log('[Suno Downloader] Found song name from document.title:', metadata.songName);
     }
   }
 
-  // Try to get duration from audio element or UI
-  const audioEl = findAudioElement();
-  if (audioEl && audioEl.duration && !isNaN(audioEl.duration) && isFinite(audioEl.duration)) {
-    metadata.duration = Math.floor(audioEl.duration);
-    console.log('[Suno Downloader] Found duration from audio element:', metadata.duration);
-  } else {
-    // Try UI duration display - ONLY in player bar
+  if (!metadata.artist) {
+    const ogArtist = document.querySelector('meta[property="music:creator"]')?.content ||
+                     document.querySelector('meta[property="og:artist"]')?.content;
+    if (ogArtist && ogArtist.length > 1) {
+      metadata.artist = ogArtist.trim();
+      console.log('[Suno Downloader] Found artist from meta:', metadata.artist);
+    }
+  }
+
+  if (!metadata.coverUrl) {
+    const ogImage = document.querySelector('meta[property="og:image"]')?.content ||
+                    document.querySelector('meta[name="twitter:image"]')?.content;
+    if (ogImage) {
+      metadata.coverUrl = ogImage;
+      console.log('[Suno Downloader] Found cover from og:image:', metadata.coverUrl);
+    }
+  }
+
+  if (!metadata.duration) {
+    const ogDuration = document.querySelector('meta[property="music:duration"]')?.content;
+    if (ogDuration) {
+      const secs = parseInt(ogDuration, 10);
+      if (!isNaN(secs) && secs > 0) {
+        metadata.duration = secs;
+        console.log('[Suno Downloader] Found duration from music:duration:', metadata.duration);
+      }
+    }
+  }
+
+  // --- 5. Duration from audio element ---
+  if (!metadata.duration) {
+    const audioEl = findAudioElement();
+    if (audioEl && audioEl.duration && !isNaN(audioEl.duration) && isFinite(audioEl.duration) && audioEl.duration > 0) {
+      metadata.duration = Math.floor(audioEl.duration);
+      console.log('[Suno Downloader] Found duration from audio element:', metadata.duration);
+    }
+  }
+
+  // --- 6. Duration from UI (player bar or page-level) ---
+  if (!metadata.duration) {
     const durationSelectors = [
       '[data-testid="duration"]',
       '[data-testid="playback-duration"]',
@@ -267,7 +314,6 @@ function extractSongMetadata() {
       '[class*="duration"]',
       '[class*="time"]:not([class*="date"])'
     ];
-    
     for (const selector of durationSelectors) {
       const el = playerBar?.querySelector(selector) || document.querySelector(selector);
       if (el && el.textContent?.trim()) {
@@ -281,31 +327,32 @@ function extractSongMetadata() {
       }
     }
   }
-  
-  // Try to get cover image
-  const coverSelectors = [
-    '[data-testid="song-cover"] img',
-    '[data-testid="playback-cover"] img',
-    '[data-testid="track-cover"] img',
-    '[class*="cover"] img',
-    '[class*="artwork"] img',
-    '[class*="image"] img',
-    'img[alt*="cover"]',
-    'img[alt*="artwork"]',
-    'img[class*="cover"]',
-    'img[class*="artwork"]'
-  ];
-  
-  for (const selector of coverSelectors) {
-    const el = playerBar?.querySelector(selector) || document.querySelector(selector);
-    if (el && el.src) {
-      metadata.coverUrl = el.src;
-      console.log('[Suno Downloader] Found cover:', metadata.coverUrl, 'via selector:', selector);
-      break;
+
+  // --- 7. Cover image from player bar or page ---
+  if (!metadata.coverUrl) {
+    const coverSelectors = [
+      '[data-testid="song-cover"] img',
+      '[data-testid="playback-cover"] img',
+      '[data-testid="track-cover"] img',
+      '[class*="cover"] img',
+      '[class*="artwork"] img',
+      '[class*="image"] img',
+      'img[alt*="cover"]',
+      'img[alt*="artwork"]',
+      'img[class*="cover"]',
+      'img[class*="artwork"]'
+    ];
+    for (const selector of coverSelectors) {
+      const el = playerBar?.querySelector(selector) || document.querySelector(selector);
+      if (el && el.src) {
+        metadata.coverUrl = el.src;
+        console.log('[Suno Downloader] Found cover:', metadata.coverUrl, 'via selector:', selector);
+        break;
+      }
     }
   }
-  
-  // Fallback: generate from URL or last known title
+
+  // --- 8. Final fallbacks ---
   if (!metadata.songName) {
     const urlMatch = window.location.href.match(/\/song\/([^/?]+)/);
     if (urlMatch) {
@@ -315,11 +362,11 @@ function extractSongMetadata() {
       metadata.songName = 'Suno Song';
     }
   }
-  
+
   if (!metadata.artist) {
     metadata.artist = 'Unknown Artist';
   }
-  
+
   console.log('[Suno Downloader] Final metadata:', metadata);
   return metadata;
 }
